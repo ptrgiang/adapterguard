@@ -12,6 +12,25 @@ class Status(str, Enum):
     SKIP = "skip"
 
 
+class VerificationLevel(str, Enum):
+    STATIC = "static"
+    SEMANTIC = "semantic"
+    QUANTIZATION = "quantization"
+    RUNTIME = "runtime"
+
+    @property
+    def rank(self) -> int:
+        return {
+            VerificationLevel.STATIC: 0,
+            VerificationLevel.SEMANTIC: 1,
+            VerificationLevel.QUANTIZATION: 2,
+            VerificationLevel.RUNTIME: 3,
+        }[self]
+
+    def satisfies(self, required: VerificationLevel) -> bool:
+        return self.rank >= required.rank
+
+
 @dataclass(slots=True)
 class PromptEvidence:
     prompt_index: int
@@ -83,21 +102,46 @@ class CheckResult:
 class VerificationReport:
     checks: list[CheckResult]
     fingerprints: dict[str, ArtifactFingerprint] = field(default_factory=dict)
-    schema_version: str = "adapterguard.report.v1"
+    verification_level: VerificationLevel = VerificationLevel.STATIC
+    required_level: VerificationLevel = VerificationLevel.STATIC
+    schema_version: str = "adapterguard.report.v2"
 
     @property
-    def safe_to_ship(self) -> bool:
+    def checks_passed(self) -> bool:
         return not any(check.status == Status.FAIL for check in self.checks)
 
     @property
+    def coverage_satisfied(self) -> bool:
+        return self.verification_level.satisfies(self.required_level)
+
+    @property
+    def policy_passed(self) -> bool:
+        return self.checks_passed and self.coverage_satisfied
+
+    @property
+    def safe_to_ship(self) -> bool:
+        return self.policy_passed and self.verification_level.satisfies(
+            VerificationLevel.SEMANTIC
+        )
+
+    @property
     def verdict(self) -> str:
-        return "SAFE TO SHIP" if self.safe_to_ship else "UNSAFE TO SHIP"
+        if not self.policy_passed:
+            return "UNSAFE TO SHIP"
+        if self.verification_level == VerificationLevel.STATIC:
+            return "STATIC CHECKS PASS"
+        return "SAFE TO SHIP"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "verdict": self.verdict,
             "safe_to_ship": self.safe_to_ship,
+            "policy_passed": self.policy_passed,
+            "checks_passed": self.checks_passed,
+            "coverage_satisfied": self.coverage_satisfied,
+            "verification_level": self.verification_level.value,
+            "required_level": self.required_level.value,
             "fingerprints": {
                 label: fingerprint.to_dict() for label, fingerprint in self.fingerprints.items()
             },
