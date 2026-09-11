@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import CheckResult, PromptEvidence, Status
+from .runtime_openai import run_openai_runtime_check
 
 
 class MissingHFDependencies(RuntimeError):
@@ -86,6 +87,51 @@ def _prompt_logits(model, tokenizer, prompts: list[str], torch):
             output = model(**encoded)
         runs.append(output.logits.detach().float().cpu())
     return runs
+
+
+def _greedy_completion_reference(
+    model,
+    tokenizer,
+    prompts: list[str],
+    torch,
+    *,
+    max_tokens: int,
+) -> tuple[list[str], list[str]]:
+    completions: list[str] = []
+    first_tokens: list[str] = []
+    device = _model_device(model)
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = tokenizer.eos_token_id
+
+    for prompt in prompts:
+        encoded = tokenizer(prompt, return_tensors="pt", truncation=True)
+        encoded = {key: value.to(device) for key, value in encoded.items()}
+        input_length = int(encoded["input_ids"].shape[-1])
+        with torch.inference_mode():
+            generated = model.generate(
+                **encoded,
+                do_sample=False,
+                max_new_tokens=max_tokens,
+                pad_token_id=pad_token_id,
+            )
+        new_tokens = generated[0, input_length:].detach().cpu()
+        completion = tokenizer.decode(
+            new_tokens,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        if new_tokens.numel():
+            first = tokenizer.decode(
+                [int(new_tokens[0].item())],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+        else:
+            first = ""
+        completions.append(completion)
+        first_tokens.append(first)
+    return completions, first_tokens
 
 
 def _token_text(tokenizer, token_id: int) -> str:
@@ -237,6 +283,13 @@ def run_semantic_checks(
     prompts_path: str | Path,
     merged_model: str | None = None,
     quantized_model: str | None = None,
+    runtime_endpoint: str | None = None,
+    runtime_model: str | None = None,
+    runtime_api_key: str | None = None,
+    runtime_max_tokens: int = 8,
+    runtime_timeout: float = 30.0,
+    min_runtime_first_token_agreement: float = 1.0,
+    min_runtime_exact_match_rate: float = 1.0,
     device: str = "auto",
     dtype: str = "auto",
     max_prompts: int = 8,
@@ -278,26 +331,17 @@ def run_semantic_checks(
         prompts=prompts,
         include_prompts=include_prompts,
     )
-    if effect["mean_abs_logit_diff"] > effect_threshold:
-        checks.append(
-            CheckResult(
-                "adapter changes model behavior",
-                Status.PASS,
-                "adapter produces a measurable logit delta",
-                effect,
-                effect_evidence,
-            )
+    checks.append(
+        CheckResult(
+            "adapter changes model behavior",
+            Status.PASS if effect["mean_abs_logit_diff"] > effect_threshold else Status.FAIL,
+            "adapter produces a measurable logit delta"
+            if effect["mean_abs_logit_diff"] > effect_threshold
+            else "adapter output is effectively identical to the base model",
+            effect,
+            effect_evidence,
         )
-    else:
-        checks.append(
-            CheckResult(
-                "adapter changes model behavior",
-                Status.FAIL,
-                "adapter output is effectively identical to the base model",
-                effect,
-                effect_evidence,
-            )
-        )
+    )
 
     merged = adapted.merge_and_unload()
     merged.eval()
@@ -326,6 +370,9 @@ def run_semantic_checks(
             merge_evidence,
         )
     )
+
+    runtime_reference = merged
+    runtime_reference_label = "in-memory-merged"
 
     if merged_model:
         exported = AutoModelForCausalLM.from_pretrained(merged_model, **model_kwargs)
@@ -357,6 +404,8 @@ def run_semantic_checks(
                 export_evidence,
             )
         )
+        runtime_reference = exported
+        runtime_reference_label = "exported-merged"
 
     if quantized_model:
         quantized = AutoModelForCausalLM.from_pretrained(quantized_model, **model_kwargs)
@@ -392,5 +441,34 @@ def run_semantic_checks(
                 quant_evidence,
             )
         )
+        runtime_reference = quantized
+        runtime_reference_label = "quantized"
+
+    if runtime_endpoint:
+        if not runtime_model:
+            raise ValueError("runtime verification requires a served model name")
+        local_completions, local_first_tokens = _greedy_completion_reference(
+            runtime_reference,
+            tokenizer,
+            prompts,
+            torch,
+            max_tokens=runtime_max_tokens,
+        )
+        runtime_check = run_openai_runtime_check(
+            endpoint=runtime_endpoint,
+            model=runtime_model,
+            prompts=prompts,
+            local_completions=local_completions,
+            local_first_tokens=local_first_tokens,
+            api_key=runtime_api_key,
+            max_tokens=runtime_max_tokens,
+            timeout=runtime_timeout,
+            min_first_token_agreement=min_runtime_first_token_agreement,
+            min_exact_match_rate=min_runtime_exact_match_rate,
+            include_prompts=include_prompts,
+        )
+        if runtime_check.metrics is not None:
+            runtime_check.metrics["reference_artifact"] = runtime_reference_label
+        checks.append(runtime_check)
 
     return checks
