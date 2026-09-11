@@ -134,7 +134,7 @@ def verify(
 
     report = VerificationReport(checks)
     if json_output:
-        console.print_json(json.dumps(report.to_dict()))
+        typer.echo(json.dumps(report.to_dict(), indent=2))
     else:
         _render(report)
 
@@ -145,7 +145,7 @@ def verify(
 @app.command()
 def version() -> None:
     """Print the AdapterGuard version."""
-    console.print(__version__)
+    typer.echo(__version__)
 
 
 if __name__ == "__main__":
