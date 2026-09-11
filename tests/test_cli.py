@@ -26,15 +26,40 @@ def _adapter(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_json_output_is_machine_readable(tmp_path):
+def test_static_json_output_does_not_claim_safe_to_ship(tmp_path):
     adapter = _adapter(tmp_path)
     result = runner.invoke(app, ["verify", "--adapter", str(adapter), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["safe_to_ship"] is True
-    assert payload["verdict"] == "SAFE TO SHIP"
+    assert payload["policy_passed"] is True
+    assert payload["safe_to_ship"] is False
+    assert payload["verdict"] == "STATIC CHECKS PASS"
+    assert payload["verification_level"] == "static"
+    assert payload["required_level"] == "static"
     assert payload["fingerprints"]["adapter"]["mode"] == "sampled"
+
+
+def test_require_semantic_fails_when_only_static_checks_ran(tmp_path):
+    adapter = _adapter(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "--adapter",
+            str(adapter),
+            "--require-level",
+            "semantic",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["policy_passed"] is False
+    assert payload["coverage_satisfied"] is False
+    assert payload["safe_to_ship"] is False
+    assert payload["verdict"] == "UNSAFE TO SHIP"
 
 
 def test_cli_writes_json_and_markdown_reports(tmp_path):
@@ -55,11 +80,15 @@ def test_cli_writes_json_and_markdown_reports(tmp_path):
     )
 
     assert result.exit_code == 0
-    assert json.loads(json_path.read_text(encoding="utf-8"))["safe_to_ship"] is True
-    assert "AdapterGuard verification report" in markdown_path.read_text(encoding="utf-8")
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["safe_to_ship"] is False
+    assert payload["policy_passed"] is True
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "AdapterGuard verification report" in markdown
+    assert "Verification level:** `static`" in markdown
 
 
-def test_quantized_artifact_is_fingerprinted_without_semantic_run(tmp_path):
+def test_quantized_artifact_is_only_fingerprinted_without_semantic_run(tmp_path):
     adapter = _adapter(tmp_path / "adapter")
     quantized = tmp_path / "quantized"
     quantized.mkdir()
@@ -81,6 +110,8 @@ def test_quantized_artifact_is_fingerprinted_without_semantic_run(tmp_path):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["fingerprints"]["quantized"]["mode"] == "sampled"
+    assert payload["verification_level"] == "static"
+    assert payload["safe_to_ship"] is False
 
 
 def test_endpoint_requires_prompts(tmp_path):
@@ -108,7 +139,17 @@ def test_invalid_fingerprint_mode_returns_usage_error(tmp_path):
     assert result.exit_code == 2
 
 
+def test_invalid_required_level_returns_usage_error(tmp_path):
+    adapter = _adapter(tmp_path)
+    result = runner.invoke(
+        app,
+        ["verify", "--adapter", str(adapter), "--require-level", "wat"],
+    )
+    assert result.exit_code == 2
+    assert "verification level must be one of" in result.stdout
+
+
 def test_version_command_is_plain_text():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.4.1"
+    assert result.stdout.strip() == "0.5.0"
