@@ -27,6 +27,32 @@ jobs:
       - name: Tests
         run: pytest -q
 
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install packaging tools
+        run: python -m pip install build twine
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Validate package metadata
+        run: python -m twine check dist/*
+      - name: Smoke install wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall dist/*.whl
+          adapterguard --version
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
   action-smoke:
     runs-on: ubuntu-latest
     steps:
