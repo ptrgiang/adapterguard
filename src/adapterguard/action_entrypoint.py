@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -34,11 +33,11 @@ def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _value(env: Mapping[str, str], key: str) -> str:
+def _value(env: dict[str, str], key: str) -> str:
     return env.get(key, "").strip()
 
 
-def build_command(env: Mapping[str, str]) -> list[str]:
+def build_command(env: dict[str, str]) -> list[str]:
     adapter = _value(env, "AG_ADAPTER")
     if not adapter:
         raise ValueError("GitHub Action input `adapter` is required")
@@ -73,7 +72,7 @@ def build_command(env: Mapping[str, str]) -> list[str]:
     return command
 
 
-def _write_output(name: str, value: str, env: Mapping[str, str]) -> None:
+def _write_output(name: str, value: str, env: dict[str, str]) -> None:
     output_file = env.get("GITHUB_OUTPUT")
     if not output_file:
         return
@@ -81,7 +80,7 @@ def _write_output(name: str, value: str, env: Mapping[str, str]) -> None:
         handle.write(f"{name}={value}\n")
 
 
-def _append_summary(report_markdown: Path, env: Mapping[str, str]) -> None:
+def _append_summary(report_markdown: Path, env: dict[str, str]) -> None:
     summary_file = env.get("GITHUB_STEP_SUMMARY")
     if not summary_file or not report_markdown.exists():
         return
@@ -94,7 +93,7 @@ def _publish_outputs(
     *,
     report_json: Path,
     report_markdown: Path,
-    env: Mapping[str, str],
+    env: dict[str, str],
 ) -> None:
     verdict = "ERROR"
     safe_to_ship = "false"
@@ -127,9 +126,7 @@ def main() -> int:
         return 2
 
     report_json = Path(_value(env, "AG_REPORT_JSON") or ".adapterguard/report.json")
-    report_markdown = Path(
-        _value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md"
-    )
+    report_markdown = Path(_value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md")
 
     result = subprocess.run(command, env=env, check=False)
     _publish_outputs(
