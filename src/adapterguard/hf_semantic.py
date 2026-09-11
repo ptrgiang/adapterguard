@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 from .models import CheckResult, PromptEvidence, Status
+from .prompts import (
+    PromptCase,
+    coerce_prompt_cases,
+    load_prompt_cases,
+    render_prompt_case,
+)
 from .runtime_openai import run_openai_chat_runtime_check, run_openai_runtime_check
 
 
@@ -26,34 +31,9 @@ def _imports():
     return torch, PeftModel, AutoModelForCausalLM, AutoTokenizer
 
 
-def load_prompts(path: str | Path, max_prompts: int) -> list[str]:
-    prompts: list[str] = []
-    with Path(path).open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                value: Any = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSONL at line {line_number}: {exc}") from exc
-
-            if isinstance(value, str):
-                prompt = value
-            elif isinstance(value, dict) and isinstance(value.get("prompt"), str):
-                prompt = value["prompt"]
-            else:
-                raise ValueError(
-                    f"Line {line_number} must be a JSON string or an object with a string `prompt`"
-                )
-
-            prompts.append(prompt)
-            if len(prompts) >= max_prompts:
-                break
-
-    if not prompts:
-        raise ValueError("Prompt file contains no usable prompts")
-    return prompts
+def load_prompts(path: str | Path, max_prompts: int) -> list[PromptCase]:
+    """Backward-compatible internal alias for structured golden prompt loading."""
+    return load_prompt_cases(path, max_prompts)
 
 
 def _resolve_dtype(torch, dtype: str):
@@ -77,26 +57,17 @@ def _model_device(model):
         return "cpu"
 
 
-def _prompt_logits(model, tokenizer, prompts: list[str], torch):
+def _prompt_logits(model, tokenizer, prompts: list[PromptCase], torch):
     runs = []
     device = _model_device(model)
     for prompt in prompts:
-        encoded = tokenizer(prompt, return_tensors="pt", truncation=True)
+        input_text = render_prompt_case(tokenizer, prompt)
+        encoded = tokenizer(input_text, return_tensors="pt", truncation=True)
         encoded = {key: value.to(device) for key, value in encoded.items()}
         with torch.inference_mode():
             output = model(**encoded)
         runs.append(output.logits.detach().float().cpu())
     return runs
-
-
-def _render_chat_prompt(tokenizer, prompt: str) -> str:
-    if not getattr(tokenizer, "chat_template", None):
-        raise ValueError("tokenizer does not define a chat template")
-    return tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
 
 
 def _token_ids(tokenizer, text: str) -> list[int]:
@@ -109,53 +80,76 @@ def _tokenizer_integrity_check(
     *,
     base_tokenizer,
     artifact_tokenizer,
-    prompts: list[str],
+    prompts: list[PromptCase | str],
     artifact_label: str,
     check_chat_template: bool,
 ) -> CheckResult:
+    cases = coerce_prompt_cases(prompts)
     raw_matches = 0
+    raw_prompt_count = 0
     chat_encoding_matches = 0
     chat_render_matches = 0
+    chat_prompt_count = 0
     mismatched_prompt_indices: list[int] = []
 
-    for index, prompt in enumerate(prompts, start=1):
-        base_raw = _token_ids(base_tokenizer, prompt)
-        artifact_raw = _token_ids(artifact_tokenizer, prompt)
-        raw_match = base_raw == artifact_raw
-        raw_matches += int(raw_match)
+    for index, case in enumerate(cases, start=1):
+        raw_match = True
+        if case.prompt is not None:
+            raw_prompt_count += 1
+            base_raw = _token_ids(base_tokenizer, case.prompt)
+            artifact_raw = _token_ids(artifact_tokenizer, case.prompt)
+            raw_match = base_raw == artifact_raw
+            raw_matches += int(raw_match)
 
         chat_encoding_match = True
         chat_render_match = True
-        if check_chat_template:
+        if check_chat_template or case.is_chat:
+            chat_prompt_count += 1
             try:
-                base_rendered = _render_chat_prompt(base_tokenizer, prompt)
-                artifact_rendered = _render_chat_prompt(artifact_tokenizer, prompt)
+                base_rendered = render_prompt_case(
+                    base_tokenizer,
+                    case,
+                    force_chat=check_chat_template,
+                )
+                artifact_rendered = render_prompt_case(
+                    artifact_tokenizer,
+                    case,
+                    force_chat=check_chat_template,
+                )
             except ValueError:
                 chat_encoding_match = False
                 chat_render_match = False
             else:
                 chat_render_match = base_rendered == artifact_rendered
                 chat_encoding_match = _token_ids(
-                    base_tokenizer, base_rendered
-                ) == _token_ids(artifact_tokenizer, artifact_rendered)
+                    base_tokenizer,
+                    base_rendered,
+                ) == _token_ids(
+                    artifact_tokenizer,
+                    artifact_rendered,
+                )
             chat_encoding_matches += int(chat_encoding_match)
             chat_render_matches += int(chat_render_match)
 
         if not raw_match or not chat_encoding_match or not chat_render_match:
             mismatched_prompt_indices.append(index)
 
-    prompt_count = len(prompts)
+    prompt_count = len(cases)
     metrics: dict[str, Any] = {
         "artifact": artifact_label,
         "prompt_count": prompt_count,
-        "exact_encoding_match_rate": raw_matches / prompt_count,
+        "raw_prompt_count": raw_prompt_count,
+        "exact_encoding_match_rate": (
+            raw_matches / raw_prompt_count if raw_prompt_count else 1.0
+        ),
         "mismatched_prompt_count": len(mismatched_prompt_indices),
         "mismatched_prompt_indices": mismatched_prompt_indices,
-        "chat_template_checked": check_chat_template,
+        "chat_template_checked": chat_prompt_count > 0,
+        "chat_prompt_count": chat_prompt_count,
     }
-    if check_chat_template:
-        metrics["chat_encoding_match_rate"] = chat_encoding_matches / prompt_count
-        metrics["chat_render_match_rate"] = chat_render_matches / prompt_count
+    if chat_prompt_count:
+        metrics["chat_encoding_match_rate"] = chat_encoding_matches / chat_prompt_count
+        metrics["chat_render_match_rate"] = chat_render_matches / chat_prompt_count
 
     ok = not mismatched_prompt_indices
     return CheckResult(
@@ -173,7 +167,7 @@ def _load_artifact_tokenizer_check(
     AutoTokenizer,
     source: str,
     base_tokenizer,
-    prompts: list[str],
+    prompts: list[PromptCase],
     artifact_label: str,
     check_chat_template: bool,
 ) -> CheckResult:
@@ -206,7 +200,7 @@ def _load_artifact_tokenizer_check(
 def _greedy_completion_reference(
     model,
     tokenizer,
-    prompts: list[str],
+    prompts: list[PromptCase],
     torch,
     *,
     max_tokens: int,
@@ -220,7 +214,11 @@ def _greedy_completion_reference(
         pad_token_id = tokenizer.eos_token_id
 
     for prompt in prompts:
-        input_text = _render_chat_prompt(tokenizer, prompt) if use_chat_template else prompt
+        input_text = render_prompt_case(
+            tokenizer,
+            prompt,
+            force_chat=use_chat_template,
+        )
         encoded = tokenizer(input_text, return_tensors="pt", truncation=True)
         encoded = {key: value.to(device) for key, value in encoded.items()}
         input_length = int(encoded["input_ids"].shape[-1])
@@ -263,7 +261,7 @@ def _comparison_metrics(
     *,
     torch,
     tokenizer,
-    prompts: list[str],
+    prompts: list[PromptCase],
     include_prompts: bool,
 ) -> tuple[dict[str, Any], list[PromptEvidence]]:
     total_abs = 0.0
@@ -309,10 +307,11 @@ def _comparison_metrics(
             left_token = _token_text(tokenizer, left_token_id)
             right_token = _token_text(tokenizer, right_token_id)
 
+        evidence_text = prompt.evidence_text
         evidence.append(
             PromptEvidence(
                 prompt_index=index,
-                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
+                prompt_sha256=hashlib.sha256(evidence_text.encode()).hexdigest(),
                 mean_abs_logit_diff=float(diff.mean().item()),
                 max_abs_logit_diff=float(diff.max().item()),
                 top1_token_agreement=float(same.float().mean().item()),
@@ -321,7 +320,7 @@ def _comparison_metrics(
                 right_token_id=right_token_id,
                 left_token=left_token,
                 right_token=right_token,
-                prompt=prompt if include_prompts else None,
+                prompt=evidence_text if include_prompts else None,
             )
         )
 
@@ -417,11 +416,14 @@ def run_semantic_checks(
     include_prompts: bool = False,
 ) -> list[CheckResult]:
     torch, PeftModel, AutoModelForCausalLM, AutoTokenizer = _imports()
-    prompts = load_prompts(prompts_path, max_prompts)
+    prompts = load_prompt_cases(prompts_path, max_prompts)
     torch_dtype = _resolve_dtype(torch, dtype)
     chat_runtime = bool(
         runtime_endpoint and runtime_endpoint.rstrip("/").endswith("/chat/completions")
     )
+    has_chat_prompts = any(prompt.is_chat for prompt in prompts)
+    if runtime_endpoint and has_chat_prompts and not chat_runtime:
+        raise ValueError("`messages` prompt cases require a /chat/completions runtime endpoint")
 
     model_kwargs: dict[str, Any] = {"torch_dtype": torch_dtype}
     if device == "auto":
@@ -492,6 +494,7 @@ def run_semantic_checks(
 
     runtime_reference = merged
     runtime_reference_label = "in-memory-merged"
+    check_chat_template = chat_runtime or has_chat_prompts
 
     if merged_model:
         checks.append(
@@ -501,7 +504,7 @@ def run_semantic_checks(
                 base_tokenizer=tokenizer,
                 prompts=prompts,
                 artifact_label="exported model",
-                check_chat_template=chat_runtime,
+                check_chat_template=check_chat_template,
             )
         )
         exported = AutoModelForCausalLM.from_pretrained(merged_model, **model_kwargs)
@@ -544,7 +547,7 @@ def run_semantic_checks(
                 base_tokenizer=tokenizer,
                 prompts=prompts,
                 artifact_label="quantized model",
-                check_chat_template=chat_runtime,
+                check_chat_template=check_chat_template,
             )
         )
         quantized = AutoModelForCausalLM.from_pretrained(quantized_model, **model_kwargs)
