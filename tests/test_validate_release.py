@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_release import (
+from adapterguard.release_validation import (
     expected_tag,
     project_version,
     validate_tag,
