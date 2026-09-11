@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -109,6 +110,61 @@ def verify(
             help="Optional quantized model ID/path to compare against the in-memory merge.",
         ),
     ] = None,
+    endpoint: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint",
+            help="OpenAI-compatible API base URL, e.g. http://localhost:8000/v1.",
+        ),
+    ] = None,
+    runtime_model: Annotated[
+        str | None,
+        typer.Option(
+            "--runtime-model",
+            help="Served model name sent to the endpoint. Defaults to --base.",
+        ),
+    ] = None,
+    runtime_api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--runtime-api-key-env",
+            help="Environment variable containing the endpoint API key.",
+        ),
+    ] = "ADAPTERGUARD_API_KEY",
+    runtime_max_tokens: Annotated[
+        int,
+        typer.Option(
+            "--runtime-max-tokens",
+            min=1,
+            help="Greedy completion length used for local-vs-runtime comparison.",
+        ),
+    ] = 8,
+    runtime_timeout: Annotated[
+        float,
+        typer.Option(
+            "--runtime-timeout",
+            min=0.1,
+            help="Per-request runtime endpoint timeout in seconds.",
+        ),
+    ] = 30.0,
+    min_runtime_first_token_agreement: Annotated[
+        float,
+        typer.Option(
+            "--min-runtime-first-token-agreement",
+            min=0.0,
+            max=1.0,
+            help="Minimum first generated token agreement with the verified artifact.",
+        ),
+    ] = 1.0,
+    min_runtime_exact_match_rate: Annotated[
+        float,
+        typer.Option(
+            "--min-runtime-exact-match-rate",
+            min=0.0,
+            max=1.0,
+            help="Minimum exact greedy completion match rate with the verified artifact.",
+        ),
+    ] = 1.0,
     device: Annotated[
         str, typer.Option("--device", help="auto, cpu, cuda, cuda:0, mps...")
     ] = "auto",
@@ -157,7 +213,7 @@ def verify(
         bool,
         typer.Option(
             "--include-prompts",
-            help="Include raw prompt text in evidence reports. Off by default for privacy.",
+            help="Include raw prompt/output text in evidence reports. Off by default.",
         ),
     ] = False,
     fingerprint_mode: Annotated[
@@ -180,10 +236,14 @@ def verify(
         typer.Option("--json", help="Emit machine-readable JSON instead of a Rich table."),
     ] = False,
 ) -> None:
-    """Run static checks and, when --prompts is provided, semantic model checks."""
+    """Run static, semantic, quantization and optional serving-runtime checks."""
     if fingerprint_mode not in {"sampled", "full", "off"}:
         console.print("[red]--fingerprint-mode must be sampled, full, or off.[/red]")
         raise typer.Exit(code=2)
+    if endpoint and prompts is None:
+        console.print("[red]--endpoint requires --prompts for runtime comparison.[/red]")
+        raise typer.Exit(code=2)
+
     config, checks = run_static_checks(adapter, expected_base=base)
 
     resolved_base = base
@@ -196,6 +256,8 @@ def verify(
         if not resolved_base:
             console.print("[red]Cannot run semantic checks without a base model.[/red]")
             raise typer.Exit(code=2)
+        served_model = runtime_model or resolved_base
+        runtime_api_key = os.getenv(runtime_api_key_env) if runtime_api_key_env else None
         try:
             checks.extend(
                 run_semantic_checks(
@@ -204,6 +266,13 @@ def verify(
                     prompts_path=prompts,
                     merged_model=merged,
                     quantized_model=quantized,
+                    runtime_endpoint=endpoint,
+                    runtime_model=served_model,
+                    runtime_api_key=runtime_api_key,
+                    runtime_max_tokens=runtime_max_tokens,
+                    runtime_timeout=runtime_timeout,
+                    min_runtime_first_token_agreement=min_runtime_first_token_agreement,
+                    min_runtime_exact_match_rate=min_runtime_exact_match_rate,
                     device=device,
                     dtype=dtype,
                     max_prompts=max_prompts,
