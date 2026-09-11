@@ -1,7 +1,9 @@
 from adapterguard.models import RuntimePromptEvidence, Status
 from adapterguard.runtime_openai import (
     RuntimeCompletionResponse,
+    _chat_completions_url,
     _completions_url,
+    run_openai_chat_runtime_check,
     run_openai_runtime_check,
 )
 
@@ -12,6 +14,21 @@ def test_completions_url_accepts_base_v1_and_full_path():
     assert (
         _completions_url("http://localhost:8000/v1/completions")
         == "http://localhost:8000/v1/completions"
+    )
+
+
+def test_chat_completions_url_accepts_base_v1_and_full_path():
+    assert (
+        _chat_completions_url("http://localhost:8000")
+        == "http://localhost:8000/v1/chat/completions"
+    )
+    assert (
+        _chat_completions_url("http://localhost:8000/v1")
+        == "http://localhost:8000/v1/chat/completions"
+    )
+    assert (
+        _chat_completions_url("http://localhost:8000/v1/chat/completions")
+        == "http://localhost:8000/v1/chat/completions"
     )
 
 
@@ -35,10 +52,35 @@ def test_runtime_check_passes_when_greedy_outputs_match():
     )
 
     assert result.status == Status.PASS
+    assert result.metrics["runtime_api"] == "openai-completions"
     assert result.metrics["first_token_agreement"] == 1.0
     assert result.metrics["exact_completion_match_rate"] == 1.0
     assert result.metrics["served_models"] == ["served/model"]
     assert all(isinstance(item, RuntimePromptEvidence) for item in result.evidence)
+
+
+def test_chat_runtime_check_uses_chat_api_metrics():
+    def requester(**kwargs):
+        return RuntimeCompletionResponse(
+            text=" answer",
+            tokens=[" answer"],
+            served_model="served/chat-model",
+            latency_ms=4.0,
+        )
+
+    result = run_openai_chat_runtime_check(
+        endpoint="http://runtime:8000/v1/chat/completions",
+        model="served/chat-model",
+        prompts=["question"],
+        local_completions=[" answer"],
+        local_first_tokens=[" answer"],
+        requester=requester,
+    )
+
+    assert result.status == Status.PASS
+    assert result.metrics["runtime_api"] == "openai-chat-completions"
+    assert result.metrics["endpoint"] == "http://runtime:8000/v1/chat/completions"
+    assert result.metrics["exact_completion_match_rate"] == 1.0
 
 
 def test_runtime_check_localizes_divergence_and_keeps_text_private_by_default():

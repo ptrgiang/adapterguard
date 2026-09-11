@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import CheckResult, PromptEvidence, Status
-from .runtime_openai import run_openai_runtime_check
+from .runtime_openai import run_openai_chat_runtime_check, run_openai_runtime_check
 
 
 class MissingHFDependencies(RuntimeError):
@@ -96,6 +96,7 @@ def _greedy_completion_reference(
     torch,
     *,
     max_tokens: int,
+    use_chat_template: bool = False,
 ) -> tuple[list[str], list[str]]:
     completions: list[str] = []
     first_tokens: list[str] = []
@@ -105,7 +106,18 @@ def _greedy_completion_reference(
         pad_token_id = tokenizer.eos_token_id
 
     for prompt in prompts:
-        encoded = tokenizer(prompt, return_tensors="pt", truncation=True)
+        input_text = prompt
+        if use_chat_template:
+            if not getattr(tokenizer, "chat_template", None):
+                raise ValueError(
+                    "chat-completions runtime verification requires a tokenizer chat template"
+                )
+            input_text = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        encoded = tokenizer(input_text, return_tensors="pt", truncation=True)
         encoded = {key: value.to(device) for key, value in encoded.items()}
         input_length = int(encoded["input_ids"].shape[-1])
         with torch.inference_mode():
@@ -447,14 +459,19 @@ def run_semantic_checks(
     if runtime_endpoint:
         if not runtime_model:
             raise ValueError("runtime verification requires a served model name")
+        chat_runtime = runtime_endpoint.rstrip("/").endswith("/chat/completions")
         local_completions, local_first_tokens = _greedy_completion_reference(
             runtime_reference,
             tokenizer,
             prompts,
             torch,
             max_tokens=runtime_max_tokens,
+            use_chat_template=chat_runtime,
         )
-        runtime_check = run_openai_runtime_check(
+        runtime_checker = (
+            run_openai_chat_runtime_check if chat_runtime else run_openai_runtime_check
+        )
+        runtime_check = runtime_checker(
             endpoint=runtime_endpoint,
             model=runtime_model,
             prompts=prompts,
