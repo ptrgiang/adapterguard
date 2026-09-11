@@ -13,6 +13,7 @@ def test_build_command_maps_action_inputs_without_shell_parsing():
         "AG_PROMPTS": "tests/golden.jsonl",
         "AG_ENDPOINT": "http://localhost:8000/v1",
         "AG_RUNTIME_MODEL": "qwen-prod",
+        "AG_REQUIRE_LEVEL": "runtime",
         "AG_INCLUDE_PROMPTS": "true",
         "AG_REPORT_JSON": "out/report.json",
         "AG_REPORT_MARKDOWN": "out/report.md",
@@ -24,6 +25,7 @@ def test_build_command_maps_action_inputs_without_shell_parsing():
     assert command[command.index("--adapter") + 1] == "./adapter path"
     assert command[command.index("--base") + 1] == "Qwen/Qwen3-8B"
     assert command[command.index("--endpoint") + 1] == "http://localhost:8000/v1"
+    assert command[command.index("--require-level") + 1] == "runtime"
     assert "--include-prompts" in command
     assert command[-4:] == [
         "--report-json",
@@ -38,13 +40,21 @@ def test_build_command_requires_adapter():
         build_command({})
 
 
-def test_publish_outputs_writes_action_outputs_and_step_summary(tmp_path):
+def test_publish_outputs_writes_policy_and_coverage_outputs(tmp_path):
     report_json = tmp_path / "report.json"
     report_markdown = tmp_path / "report.md"
     github_output = tmp_path / "github-output.txt"
     step_summary = tmp_path / "summary.md"
     report_json.write_text(
-        json.dumps({"verdict": "SAFE TO SHIP", "safe_to_ship": True}),
+        json.dumps(
+            {
+                "verdict": "STATIC CHECKS PASS",
+                "safe_to_ship": False,
+                "policy_passed": True,
+                "verification_level": "static",
+                "required_level": "static",
+            }
+        ),
         encoding="utf-8",
     )
     report_markdown.write_text("# AdapterGuard verification report\n", encoding="utf-8")
@@ -59,8 +69,11 @@ def test_publish_outputs_writes_action_outputs_and_step_summary(tmp_path):
     )
 
     output = github_output.read_text(encoding="utf-8")
-    assert "verdict=SAFE TO SHIP" in output
-    assert "safe_to_ship=true" in output
+    assert "verdict=STATIC CHECKS PASS" in output
+    assert "safe_to_ship=false" in output
+    assert "policy_passed=true" in output
+    assert "verification_level=static" in output
+    assert "required_level=static" in output
     assert f"report_json={report_json.resolve()}" in output
     assert "AdapterGuard verification report" in step_summary.read_text(encoding="utf-8")
 
@@ -77,3 +90,4 @@ def test_publish_outputs_reports_error_when_report_is_missing(tmp_path):
     output = github_output.read_text(encoding="utf-8")
     assert "verdict=ERROR" in output
     assert "safe_to_ship=false" in output
+    assert "policy_passed=false" in output
