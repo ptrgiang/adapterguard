@@ -69,7 +69,7 @@ Confirm all of the following:
 
 ```bash
 python -m pip install --upgrade adapterguard
-adapterguard --version
+adapterguard version
 ```
 
 The CLI version should match the PyPI release and the GitHub tag.
