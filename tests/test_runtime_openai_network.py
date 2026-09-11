@@ -2,6 +2,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from adapterguard.prompts import PromptCase
 from adapterguard.runtime_openai import _request_chat_completion, _request_completion
 
 
@@ -97,12 +98,20 @@ def test_request_chat_completion_uses_messages_and_parses_logprobs():
             ],
         }
     )
+    case = PromptCase(
+        messages=(
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "hello chat"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "repeat my first message"},
+        )
+    )
     try:
         endpoint = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
         response = _request_chat_completion(
             endpoint=endpoint,
             model="requested/chat-model",
-            prompt="hello chat",
+            prompt=case,
             api_key="secret-token",
             max_tokens=2,
             timeout=2.0,
@@ -116,7 +125,7 @@ def test_request_chat_completion_uses_messages_and_parses_logprobs():
     assert isinstance(payload, dict)
     assert payload == {
         "model": "requested/chat-model",
-        "messages": [{"role": "user", "content": "hello chat"}],
+        "messages": case.as_messages(),
         "temperature": 0,
         "max_tokens": 2,
         "logprobs": True,
