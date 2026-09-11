@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +41,11 @@ class PromptCase:
         return [{"role": "user", "content": self.prompt or ""}]
 
 
-def _parse_messages(value: Any, *, line_number: int | None = None) -> tuple[dict[str, str], ...]:
+def _parse_messages(
+    value: Any,
+    *,
+    line_number: int | None = None,
+) -> tuple[dict[str, str], ...]:
     location = f" at line {line_number}" if line_number is not None else ""
     if not isinstance(value, list) or not value:
         raise ValueError(f"`messages`{location} must be a non-empty JSON array")
@@ -55,13 +60,18 @@ def _parse_messages(value: Any, *, line_number: int | None = None) -> tuple[dict
             raise ValueError(f"message {index}{location} must have a non-empty string `role`")
         if not isinstance(content, str):
             raise ValueError(
-                f"message {index}{location} must have string `content`; multimodal content is not yet supported"
+                f"message {index}{location} must have string `content`; "
+                "multimodal content is not yet supported"
             )
         messages.append({"role": role, "content": content})
     return tuple(messages)
 
 
-def prompt_case_from_value(value: Any, *, line_number: int | None = None) -> PromptCase:
+def prompt_case_from_value(
+    value: Any,
+    *,
+    line_number: int | None = None,
+) -> PromptCase:
     location = f" at line {line_number}" if line_number is not None else ""
     if isinstance(value, PromptCase):
         return value
@@ -78,7 +88,12 @@ def prompt_case_from_value(value: Any, *, line_number: int | None = None) -> Pro
                 raise ValueError(f"`prompt`{location} must be a string")
             return PromptCase(prompt=prompt)
         if has_messages:
-            return PromptCase(messages=_parse_messages(value.get("messages"), line_number=line_number))
+            return PromptCase(
+                messages=_parse_messages(
+                    value.get("messages"),
+                    line_number=line_number,
+                )
+            )
     raise ValueError(
         f"prompt entry{location} must be a JSON string, an object with string `prompt`, "
         "or an object with a non-empty `messages` array"
@@ -110,7 +125,12 @@ def load_prompt_cases(path: str | Path, max_prompts: int) -> list[PromptCase]:
     return prompts
 
 
-def render_prompt_case(tokenizer, prompt: PromptCase | str, *, force_chat: bool = False) -> str:
+def render_prompt_case(
+    tokenizer,
+    prompt: PromptCase | str,
+    *,
+    force_chat: bool = False,
+) -> str:
     case = prompt_case_from_value(prompt)
     if not case.is_chat and not force_chat:
         return case.prompt or ""
