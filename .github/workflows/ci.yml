@@ -87,6 +87,7 @@ jobs:
         with:
           adapter: .ci-adapter
           install-hf: "false"
+          require-level: static
           upload-evidence: "false"
 
       - name: Assert Action outputs
@@ -94,10 +95,16 @@ jobs:
         env:
           VERDICT: ${{ steps.guard.outputs.verdict }}
           SAFE_TO_SHIP: ${{ steps.guard.outputs.safe-to-ship }}
+          POLICY_PASSED: ${{ steps.guard.outputs.policy-passed }}
+          VERIFICATION_LEVEL: ${{ steps.guard.outputs.verification-level }}
+          REQUIRED_LEVEL: ${{ steps.guard.outputs.required-level }}
           REPORT_JSON: ${{ steps.guard.outputs.report-json }}
           REPORT_MARKDOWN: ${{ steps.guard.outputs.report-markdown }}
         run: |
-          test "$VERDICT" = "SAFE TO SHIP"
-          test "$SAFE_TO_SHIP" = "true"
+          test "$VERDICT" = "STATIC CHECKS PASS"
+          test "$SAFE_TO_SHIP" = "false"
+          test "$POLICY_PASSED" = "true"
+          test "$VERIFICATION_LEVEL" = "static"
+          test "$REQUIRED_LEVEL" = "static"
           test -f "$REPORT_JSON"
           test -f "$REPORT_MARKDOWN"
