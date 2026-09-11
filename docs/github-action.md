@@ -5,8 +5,9 @@ The Action installs AdapterGuard, runs the same `verify` pipeline as the CLI, wr
 Markdown evidence, adds the Markdown report to the GitHub Job Summary, and can upload both reports
 as a workflow artifact.
 
-> Until a versioned Action release is published, use `ptrgiang/adapterguard@main`. For production
-> workflows, pin a released tag or commit SHA once available.
+`v0.4.1` is the first stable Action release. Use `ptrgiang/adapterguard@v0.4.1` for normal
+version-pinned workflows. For security-sensitive production workflows, pin the immutable release
+commit SHA instead.
 
 ## Minimal static gate
 
@@ -24,7 +25,7 @@ jobs:
 
       - name: Verify adapter
         id: adapterguard
-        uses: ptrgiang/adapterguard@main
+        uses: ptrgiang/adapterguard@v0.4.1
         with:
           adapter: ./adapter
           install-hf: "false"
@@ -38,7 +39,7 @@ jobs:
 
 ```yaml
 - name: Verify fine-tuned artifacts
-  uses: ptrgiang/adapterguard@main
+  uses: ptrgiang/adapterguard@v0.4.1
   with:
     adapter: ./adapter
     base: Qwen/Qwen3-8B
@@ -56,7 +57,7 @@ checks.
 ```yaml
 - name: Verify deployed runtime
   id: adapterguard
-  uses: ptrgiang/adapterguard@main
+  uses: ptrgiang/adapterguard@v0.4.1
   with:
     adapter: ./adapter
     base: Qwen/Qwen3-8B
@@ -145,5 +146,5 @@ the exact model, task, golden prompt set, and acceptable production behavior.
 
 - Raw prompts and generated outputs remain excluded from evidence unless `include-prompts: "true"`.
 - Runtime API keys are not passed as CLI arguments and are not serialized into reports.
-- Pin the Action to a released tag or immutable commit SHA for production workflows.
+- Pin `@v0.4.1` for versioned usage or the immutable release commit SHA for maximum supply-chain stability.
 - Evidence is uploaded from explicit report paths only.
