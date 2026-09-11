@@ -2,27 +2,26 @@
 
 > **Know your adapter still works before you ship it.**
 
-AdapterGuard is an independent semantic integrity checker for LoRA, QLoRA, DoRA and other
-PEFT adapters. It targets the risky gap between **"training finished"** and
-**"the artifact deployed to production still behaves like the trained adapter."**
-
-Fine-tuning pipelines routinely transform the same model artifact:
+AdapterGuard is an independent semantic integrity checker for LoRA, QLoRA, DoRA and other PEFT
+adapters. It targets the risky gap between **"training finished"** and **"the model actually served
+to users still behaves like the artifact I verified."**
 
 ```text
 train -> save adapter -> reload -> merge -> quantize -> export -> serve
 ```
 
-Each transformation can silently change behavior. A model can load successfully and still be
-wrong. AdapterGuard makes those failures visible, reproducible and CI-friendly.
+Each transformation can silently change behavior. A model can load successfully, a runtime can
+answer requests successfully, and the deployed system can still be serving the wrong behavior.
+AdapterGuard makes those failures visible, reproducible and CI-friendly.
 
 ## 60-second proofs
 
 ### Corrupted export
 
-AdapterGuard includes a self-contained demo that needs **no pretrained model download**. It builds
-a tiny local GPT-2 model, attaches a real LoRA adapter, performs a valid merge, deliberately
-corrupts the exported model while keeping it loadable, and proves that AdapterGuard catches the
-semantic divergence.
+AdapterGuard includes a self-contained demo that needs no pretrained model download. It builds a
+tiny local GPT-2 model, attaches a real LoRA adapter, performs a valid merge, deliberately corrupts
+the exported model while keeping it loadable, and proves that AdapterGuard catches the semantic
+divergence.
 
 ```bash
 pip install -e ".[hf]"
@@ -41,9 +40,9 @@ DEMO PASS: AdapterGuard caught a loadable but semantically corrupted artifact.
 
 ### Quantization drift
 
-v0.3 adds a second self-contained proof. It creates a merged LoRA model, applies aggressive
-symmetric fake quantization to its weights, saves a still-loadable Hugging Face artifact and asks
-AdapterGuard to compare it against the in-memory merged reference.
+The quantization demo creates a merged LoRA model, applies aggressive symmetric fake quantization
+to its weights, saves a still-loadable Hugging Face artifact and asks AdapterGuard to compare it
+against the in-memory merged reference.
 
 ```bash
 python examples/quantization_demo.py
@@ -57,11 +56,10 @@ FAIL  quantized model preserves merged behavior
 DEMO PASS: AdapterGuard localized quantization-induced semantic drift.
 ```
 
-The fake-quantization demo validates the verifier without requiring GPU-only quantization
-libraries. Real GPTQ, AWQ or bitsandbytes artifacts can be supplied through `--quantized` when the
-corresponding runtime dependencies are installed.
+Real GPTQ, AWQ or bitsandbytes artifacts can be supplied through `--quantized` when their runtime
+dependencies are installed.
 
-## What v0.3 checks
+## What v0.4 checks
 
 **Static checks (fast, no model load):**
 
@@ -71,17 +69,27 @@ corresponding runtime dependencies are installed.
 - LoRA rank is valid
 - adapter weights are present
 
-**Semantic checks (optional Hugging Face extra):**
+**Artifact semantic checks:**
 
 - the adapter measurably changes model logits vs. the base model
 - `merge_and_unload()` preserves active-adapter behavior
 - an exported/merged model preserves active-adapter behavior
 - a quantized model stays within an explicit semantic drift budget vs. the merged reference
-- mean/max logit drift and token-level top-1 agreement
-- per-prompt localization of semantic drift
+- per-prompt mean/max logit drift and top-1 token agreement
 - first position where top-1 token predictions diverge
 - worst prompt and count of prompts with top-1 divergence after quantization
 - quantization metadata when exposed by the model config
+
+**Serving-runtime checks:**
+
+- OpenAI-compatible `/v1/completions` endpoints, including vLLM-style servers
+- deterministic greedy completion comparison against the verified local artifact
+- first generated token agreement
+- exact completion match rate
+- per-prompt local/served output hashes
+- mean, p50, p95 and max endpoint latency
+- requested model and model identifiers returned by the server
+- automatic selection of the most downstream local reference artifact
 
 **Evidence layer:**
 
@@ -90,10 +98,10 @@ corresponding runtime dependencies are installed.
 - fingerprints for adapter, base, merged and quantized artifacts
 - JSON report schema for machines
 - Markdown report for pull requests and release evidence
-- raw prompts excluded from reports by default for privacy
+- raw prompts and runtime outputs excluded from reports by default for privacy
 
-The goal is not to replace PEFT, Transformers, Unsloth, Axolotl, TRL or quantization runtimes.
-AdapterGuard sits **after/between them as an independent verifier**.
+AdapterGuard does not replace PEFT, Transformers, Unsloth, Axolotl, TRL, quantizers or inference
+servers. It sits after and between them as an independent verifier.
 
 ## Install
 
@@ -131,22 +139,24 @@ adapterguard verify \
   --prompts examples/prompts.jsonl
 ```
 
-Compare against a specific base and exported model:
+Compare against exported and quantized artifacts:
 
 ```bash
 adapterguard verify \
   --base Qwen/Qwen3-8B \
   --adapter ./my-adapter \
   --merged ./merged-model \
-  --prompts examples/prompts.jsonl
+  --quantized ./quantized-model \
+  --prompts tests/golden.jsonl
 ```
 
-A failed check exits with code `1`, so the command can gate a release in CI.
+A failed check exits with code `1`, so the command can gate a release or deployment.
 
 ## Quantization integrity
 
-Provide any quantized causal-LM artifact that `AutoModelForCausalLM.from_pretrained()` can load in
-your environment:
+AdapterGuard compares `--quantized` against the in-memory merged model created from the same base +
+adapter. This isolates the `merge -> quantize` transformation instead of mixing quantization drift
+with adapter or merge drift.
 
 ```bash
 adapterguard verify \
@@ -154,47 +164,64 @@ adapterguard verify \
   --adapter ./my-adapter \
   --quantized ./qwen3-8b-awq \
   --prompts tests/golden.jsonl \
-  --report-json artifacts/adapterguard.json \
-  --report-markdown artifacts/adapterguard.md
-```
-
-AdapterGuard compares the quantized artifact against the **in-memory merged model** created from
-the same base + adapter. This isolates the `merge -> quantize` transformation instead of mixing
-quantization drift with adapter or merge drift.
-
-The default quantization budget is intentionally configurable:
-
-```text
-max mean absolute logit drift: 0.05
-minimum top-1 token agreement: 0.98
-```
-
-Override it for your model, quantizer and task:
-
-```bash
-adapterguard verify \
-  ... \
-  --quantized ./model-int4 \
   --max-quantized-diff 0.03 \
   --min-quantized-top1-agreement 0.99
 ```
 
-These defaults are **release-gate starting points, not universal quality thresholds**. A useful
-production budget should be calibrated against your own golden prompts and acceptable task-level
-behavior.
+The defaults are release-gate starting points, not universal quality thresholds. Calibrate them
+against your own model, quantizer and golden prompts.
 
-Quantization evidence adds fields such as:
+## Runtime integrity / vLLM
+
+Once an artifact has been served, verify the last transition too:
 
 ```text
-prompt_count
-divergent_prompt_count
-worst_prompt_index
-worst_prompt_mean_abs_logit_diff
-quantization_method
-quantization_bits
-budget_max_mean_abs_logit_diff
-budget_min_top1_token_agreement
+verified artifact -> serving runtime -> OpenAI-compatible API
 ```
+
+Example:
+
+```bash
+export ADAPTERGUARD_API_KEY=...
+
+adapterguard verify \
+  --base Qwen/Qwen3-8B \
+  --adapter ./my-adapter \
+  --quantized ./qwen3-8b-awq \
+  --prompts tests/golden.jsonl \
+  --endpoint http://localhost:8000/v1 \
+  --runtime-model qwen3-prod \
+  --report-json artifacts/adapterguard.json \
+  --report-markdown artifacts/adapterguard.md
+```
+
+The runtime reference is selected automatically:
+
+1. `--quantized` if supplied
+2. otherwise `--merged` if supplied
+3. otherwise the in-memory merged base + adapter model
+
+This is recorded as `reference_artifact` in the runtime metrics, so quantization drift is not
+mistaken for serving drift.
+
+Default runtime release budgets are strict:
+
+```text
+minimum first-token agreement: 1.0
+minimum exact greedy completion match rate: 1.0
+```
+
+Relax them explicitly when your runtime is expected to introduce controlled numerical variation:
+
+```bash
+--min-runtime-first-token-agreement 0.99 \
+--min-runtime-exact-match-rate 0.95
+```
+
+Endpoint authentication is read from `ADAPTERGUARD_API_KEY` by default. Use another variable with
+`--runtime-api-key-env`. Secrets are never written into evidence reports.
+
+See [`docs/runtime-verification.md`](docs/runtime-verification.md) for the full runtime contract.
 
 ## Generate evidence reports
 
@@ -211,10 +238,8 @@ adapterguard verify \
   --report-markdown artifacts/adapterguard.md
 ```
 
-The evidence report contains artifact fingerprints, aggregate comparison metrics, per-prompt
-metrics and the first divergent top-1 prediction when one exists.
-
-Raw prompt text is **not included by default**. If the prompts are safe to expose in CI artifacts:
+Raw prompt and runtime output text is **not included by default**. If the data is safe to expose in
+CI artifacts:
 
 ```bash
 adapterguard verify ... --include-prompts --report-markdown adapterguard.md
@@ -229,8 +254,6 @@ adapterguard verify --adapter ./my-adapter --json
 See [`docs/report-schema.md`](docs/report-schema.md) for the report contract.
 
 ## Artifact fingerprint modes
-
-The default is optimized for large model directories:
 
 ```bash
 adapterguard verify --adapter ./my-adapter --fingerprint-mode sampled
@@ -257,33 +280,30 @@ or an object:
 {"prompt": "Explain gradient descent simply."}
 ```
 
-Start with prompts that exercise the exact behavior you fine-tuned. Quantization checks are only as
-useful as the behavioral surface represented by those prompts.
+Golden prompts should exercise the exact behavior you fine-tuned and the behavior users actually
+rely on in production.
 
 ## Current scope
 
-AdapterGuard v0.3 intentionally stays narrow:
+AdapterGuard v0.4 currently supports:
 
 - causal language models supported by `AutoModelForCausalLM`
 - local/Hugging Face model IDs
 - PEFT adapters loadable through `PeftModel`
 - semantic comparison at logits/top-1-token level
-- local artifact evidence reports
 - quantized artifacts loadable by the installed Transformers/runtime stack
+- OpenAI-compatible text completion endpoints
+- local JSON/Markdown evidence reports
 
-AdapterGuard does **not** perform quantization itself. For GPTQ/AWQ/bitsandbytes or other formats,
-install the dependencies required by Transformers to load that artifact, then point AdapterGuard at
-it with `--quantized`.
-
-Not yet covered: sequence-classification adapters, multimodal adapters, GGUF/llama.cpp native
-loading, vLLM/TGI endpoint probing, cross-runtime comparison and signed provenance.
+Not yet covered: sequence-classification adapters, multimodal adapters, native GGUF/llama.cpp
+loading, chat-completions verification, TGI-specific verification and runtime-to-runtime matrices.
 
 ## Why this repo exists
 
-Most tooling answers **"can I load/merge/quantize this model?"** AdapterGuard asks a different
-question:
+Most tooling answers **"can I load, merge, quantize or serve this model?"** AdapterGuard asks a
+different question:
 
-> **"Can I prove the artifact I am about to ship still behaves like the adapter I trained?"**
+> **"Can I prove the artifact and deployment I am about to ship still behave like the adapter I trained?"**
 
 That distinction is the project.
 
@@ -319,7 +339,11 @@ That distinction is the project.
 
 ### v0.4 — runtime matrix
 
-- [ ] vLLM endpoint verifier
+- [x] OpenAI-compatible / vLLM endpoint verifier
+- [x] downstream reference selection
+- [x] per-prompt runtime divergence evidence
+- [x] runtime latency evidence
+- [ ] chat-completions verifier
 - [ ] TGI endpoint verifier
 - [ ] GGUF / llama.cpp comparison
 - [ ] reusable GitHub Action for release gating
