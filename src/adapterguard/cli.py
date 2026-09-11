@@ -9,8 +9,10 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
+from .fingerprints import fingerprint_artifact
 from .hf_semantic import MissingHFDependencies, run_semantic_checks
-from .models import Status, VerificationReport
+from .models import ArtifactFingerprint, Status, VerificationReport
+from .reports import write_json_report, write_markdown_report
 from .static_checks import run_static_checks
 
 app = typer.Typer(
@@ -37,17 +39,47 @@ def _render(report: VerificationReport) -> None:
         result = check.message
         if check.metrics:
             metric_text = ", ".join(
-                f"{k}={v:.6g}" if isinstance(v, float) else f"{k}={v}"
-                for k, v in check.metrics.items()
+                f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}"
+                for key, value in check.metrics.items()
             )
             result = f"{result} [dim]({metric_text})[/dim]"
         table.add_row(symbols[check.status], check.name, result)
 
     console.print(table)
+    if report.fingerprints:
+        console.print("\n[bold]Artifact fingerprints[/bold]")
+        for label, fingerprint in report.fingerprints.items():
+            console.print(
+                f"  {label}: {fingerprint.sha256[:16]}… "
+                f"[dim]({fingerprint.mode})[/dim]"
+            )
+
     if report.safe_to_ship:
         console.print("\n[bold green]VERDICT: SAFE TO SHIP[/bold green]")
     else:
         console.print("\n[bold red]VERDICT: UNSAFE TO SHIP[/bold red]")
+
+
+def _collect_fingerprints(
+    *,
+    adapter: Path,
+    base: str | None,
+    merged: str | None,
+    mode: str,
+) -> dict[str, ArtifactFingerprint]:
+    fingerprints: dict[str, ArtifactFingerprint] = {}
+    sources: list[tuple[str, str | Path | None]] = [
+        ("adapter", adapter),
+        ("base", base),
+        ("merged", merged),
+    ]
+    for label, source in sources:
+        if source is None:
+            continue
+        fingerprint = fingerprint_artifact(label, source, mode=mode)
+        if fingerprint is not None:
+            fingerprints[label] = fingerprint
+    return fingerprints
 
 
 @app.command()
@@ -68,7 +100,9 @@ def verify(
         str | None,
         typer.Option("--merged", help="Optional exported/merged model ID or local path."),
     ] = None,
-    device: Annotated[str, typer.Option("--device", help="auto, cpu, cuda, cuda:0, mps...")] = "auto",
+    device: Annotated[
+        str, typer.Option("--device", help="auto, cpu, cuda, cuda:0, mps...")
+    ] = "auto",
     dtype: Annotated[
         str,
         typer.Option("--dtype", help="auto, float32, float16, or bfloat16."),
@@ -93,12 +127,38 @@ def verify(
             help="Minimum token-level top-1 agreement after merge/export.",
         ),
     ] = 0.999,
+    include_prompts: Annotated[
+        bool,
+        typer.Option(
+            "--include-prompts",
+            help="Include raw prompt text in evidence reports. Off by default for privacy.",
+        ),
+    ] = False,
+    fingerprint_mode: Annotated[
+        str,
+        typer.Option(
+            "--fingerprint-mode",
+            help="Artifact fingerprint mode: sampled, full, or off.",
+        ),
+    ] = "sampled",
+    report_json: Annotated[
+        Path | None,
+        typer.Option("--report-json", help="Write the complete evidence report as JSON."),
+    ] = None,
+    report_markdown: Annotated[
+        Path | None,
+        typer.Option("--report-markdown", help="Write a PR-friendly Markdown evidence report."),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Emit machine-readable JSON instead of a Rich table."),
     ] = False,
 ) -> None:
     """Run static checks and, when --prompts is provided, semantic model checks."""
+    if fingerprint_mode not in {"sampled", "full", "off"}:
+        console.print("[red]--fingerprint-mode must be sampled, full, or off.[/red]")
+        raise typer.Exit(code=2)
+
     config, checks = run_static_checks(adapter, expected_base=base)
 
     resolved_base = base
@@ -123,6 +183,7 @@ def verify(
                     max_prompts=max_prompts,
                     max_merge_diff=max_merge_diff,
                     min_top1_agreement=min_top1_agreement,
+                    include_prompts=include_prompts,
                 )
             )
         except MissingHFDependencies as exc:
@@ -132,7 +193,23 @@ def verify(
             console.print(f"[red]Semantic verification failed to run: {exc}[/red]")
             raise typer.Exit(code=2) from exc
 
-    report = VerificationReport(checks)
+    try:
+        fingerprints = _collect_fingerprints(
+            adapter=adapter,
+            base=resolved_base,
+            merged=merged,
+            mode=fingerprint_mode,
+        )
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Fingerprinting failed: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    report = VerificationReport(checks, fingerprints=fingerprints)
+    if report_json:
+        write_json_report(report, report_json)
+    if report_markdown:
+        write_markdown_report(report, report_markdown)
+
     if json_output:
         typer.echo(json.dumps(report.to_dict(), indent=2))
     else:

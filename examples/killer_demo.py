@@ -130,9 +130,6 @@ def main() -> int:
             ),
         )
 
-        # PEFT initializes LoRA B to zero so a fresh adapter is initially a no-op.
-        # Give A/B deterministic non-zero values to create a genuine behavioral delta
-        # without running a training loop.
         with torch.no_grad():
             for name, parameter in adapted.named_parameters():
                 if "lora_A" in name:
@@ -141,11 +138,8 @@ def main() -> int:
                     parameter.normal_(mean=0.0, std=0.15)
 
         adapted.save_pretrained(adapter_dir)
-
         merged = adapted.merge_and_unload()
 
-        # Deliberately corrupt a core weight after a legitimate merge. This models
-        # a broken export/conversion step that still produces a loadable model.
         corrupted_parameter = None
         with torch.no_grad():
             for name, parameter in merged.named_parameters():
@@ -185,7 +179,9 @@ def main() -> int:
         )
 
         for check in checks:
-            metrics = ", ".join(f"{key}={value:.6g}" for key, value in (check.metrics or {}).items())
+            metrics = ", ".join(
+                f"{key}={value:.6g}" for key, value in (check.metrics or {}).items()
+            )
             print(f"{check.status.value.upper():4}  {check.name}")
             if metrics:
                 print(f"      {metrics}")
@@ -207,7 +203,10 @@ def main() -> int:
         )
 
         if detected:
-            print("\nDEMO PASS: AdapterGuard caught a loadable but semantically corrupted artifact.")
+            print(
+                "\nDEMO PASS: AdapterGuard caught a loadable but semantically "
+                "corrupted artifact."
+            )
             return 0
 
         print("\nDEMO FAIL: expected corruption was not detected.")

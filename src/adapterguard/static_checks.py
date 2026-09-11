@@ -89,7 +89,10 @@ def run_static_checks(
                 CheckResult("LoRA hyperparameters", Status.FAIL, "invalid or missing rank `r`")
             )
 
-    weight_file = next((adapter / name for name in _WEIGHT_NAMES if (adapter / name).is_file()), None)
+    weight_file = next(
+        (adapter / name for name in _WEIGHT_NAMES if (adapter / name).is_file()),
+        None,
+    )
     if weight_file:
         checks.append(
             CheckResult(

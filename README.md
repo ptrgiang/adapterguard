@@ -3,7 +3,7 @@
 > **Know your adapter still works before you ship it.**
 
 AdapterGuard is an independent semantic integrity checker for LoRA, QLoRA, DoRA and other
-PEFT adapters. It is designed for the risky gap between **"training finished"** and
+PEFT adapters. It targets the risky gap between **"training finished"** and
 **"the artifact deployed to production still behaves like the trained adapter."**
 
 Fine-tuning pipelines routinely transform the same model artifact:
@@ -13,7 +13,7 @@ train -> save adapter -> reload -> merge -> quantize -> export -> serve
 ```
 
 Each transformation can silently change behavior. A model can load successfully and still be
-wrong. AdapterGuard makes those failures visible and CI-friendly.
+wrong. AdapterGuard makes those failures visible, reproducible and CI-friendly.
 
 ## 60-second proof
 
@@ -40,7 +40,7 @@ DEMO PASS: AdapterGuard caught a loadable but semantically corrupted artifact.
 This is the failure class the project exists to catch: **syntactically valid artifact, wrong
 behavior**.
 
-## What v0.1 checks
+## What v0.2 checks
 
 **Static checks (fast, no model load):**
 
@@ -55,7 +55,17 @@ behavior**.
 - the adapter measurably changes model logits vs. the base model
 - `merge_and_unload()` preserves active-adapter behavior
 - an exported/merged model preserves active-adapter behavior
-- reports mean/max logit drift and token-level top-1 agreement
+- mean/max logit drift and token-level top-1 agreement
+- per-prompt localization of semantic drift
+- first position where top-1 token predictions diverge
+
+**Evidence layer:**
+
+- sampled or full SHA-256 fingerprints for local artifacts
+- stable reference fingerprints for remote model IDs
+- JSON report schema for machines
+- Markdown report for pull requests and release evidence
+- raw prompts excluded from reports by default for privacy
 
 The goal is not to replace PEFT, Transformers, Unsloth, Axolotl, TRL or serving runtimes.
 AdapterGuard sits **after/between them as an independent verifier**.
@@ -106,27 +116,53 @@ adapterguard verify \
   --prompts examples/prompts.jsonl
 ```
 
-Example output:
-
-```text
-AdapterGuard v0.1.0
-
-PASS  adapter config                         Found adapter_config.json
-PASS  base model                             Qwen/Qwen3-8B
-PASS  adapter weights                        adapter_model.safetensors
-PASS  adapter changes model behavior         mean_abs_logit_diff=0.0182
-FAIL  merge preserves adapter behavior       mean_abs_logit_diff=0.0091
-
-VERDICT: UNSAFE TO SHIP
-```
-
 A failed check exits with code `1`, so the command can gate a release in CI.
 
-For machine-readable output:
+## Generate evidence reports
+
+Write both machine-readable JSON and a PR-friendly Markdown report:
+
+```bash
+adapterguard verify \
+  --base Qwen/Qwen3-8B \
+  --adapter ./my-adapter \
+  --merged ./merged-model \
+  --prompts examples/prompts.jsonl \
+  --report-json artifacts/adapterguard.json \
+  --report-markdown artifacts/adapterguard.md
+```
+
+The evidence report contains artifact fingerprints, aggregate comparison metrics, per-prompt
+metrics and the first divergent top-1 prediction when one exists.
+
+Raw prompt text is **not included by default**. If the prompts are safe to expose in CI artifacts:
+
+```bash
+adapterguard verify ... --include-prompts --report-markdown adapterguard.md
+```
+
+For stdout JSON:
 
 ```bash
 adapterguard verify --adapter ./my-adapter --json
 ```
+
+See [`docs/report-schema.md`](docs/report-schema.md) for the report contract.
+
+## Artifact fingerprint modes
+
+The default is optimized for large model directories:
+
+```bash
+adapterguard verify --adapter ./my-adapter --fingerprint-mode sampled
+```
+
+- `sampled`: hashes file identity, size, and the first/last 64 KiB of each local file
+- `full`: streams every byte for release-grade SHA-256 evidence
+- `off`: disables artifact fingerprints
+- remote IDs such as `Qwen/Qwen3-8B` receive a stable reference fingerprint, not a content hash
+
+Use `full` when the report is intended to prove the exact bytes shipped to production.
 
 ## Prompt format
 
@@ -146,16 +182,16 @@ Start with prompts that exercise the exact behavior you fine-tuned.
 
 ## Current scope
 
-AdapterGuard v0.1 intentionally starts narrow:
+AdapterGuard v0.2 intentionally stays narrow:
 
 - causal language models supported by `AutoModelForCausalLM`
 - local/Hugging Face model IDs
 - PEFT adapters loadable through `PeftModel`
-- semantic comparison at the logits/top-1-token level
+- semantic comparison at logits/top-1-token level
+- local artifact evidence reports
 
 Not yet covered: sequence-classification adapters, multimodal adapters, GGUF, vLLM/TGI endpoint
-probing, cross-runtime comparison, quantization-aware tolerance profiles, adapter provenance and
-cryptographic manifests.
+probing, cross-runtime comparison, quantization-aware tolerance profiles and signed provenance.
 
 ## Why this repo exists
 
@@ -178,11 +214,13 @@ That distinction is the project.
 
 ### v0.2 — reproducible evidence
 
-- [ ] adapter/model fingerprints
-- [ ] deterministic golden-prompt manifests
-- [ ] per-prompt failure localization
-- [ ] HTML/Markdown verification report
-- [ ] save -> reload equivalence check
+- [x] adapter/model fingerprints
+- [x] per-prompt failure localization
+- [x] first divergent token prediction
+- [x] machine-readable evidence schema
+- [x] Markdown verification report
+- [x] privacy-safe prompt hashing by default
+- [ ] save -> reload equivalence against a captured pre-save reference
 
 ### v0.3 — runtime matrix
 
@@ -190,7 +228,7 @@ That distinction is the project.
 - [ ] vLLM endpoint verifier
 - [ ] TGI endpoint verifier
 - [ ] GGUF / llama.cpp comparison
-- [ ] GitHub Action for release gating
+- [ ] reusable GitHub Action for release gating
 
 ## Contributing
 
