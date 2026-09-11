@@ -5,7 +5,10 @@ import re
 import sys
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 CI
+    import tomli as tomllib
 
 
 def project_version(pyproject: str | Path = "pyproject.toml") -> str:
