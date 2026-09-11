@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
-from pathlib import Path
 
 
 _VALUE_OPTIONS = (
@@ -76,23 +76,23 @@ def _write_output(name: str, value: str, env: dict[str, str]) -> None:
     output_file = env.get("GITHUB_OUTPUT")
     if not output_file:
         return
-    with Path(output_file).open("a", encoding="utf-8") as handle:
+    with pathlib.Path(output_file).open("a", encoding="utf-8") as handle:
         handle.write(f"{name}={value}\n")
 
 
-def _append_summary(report_markdown: Path, env: dict[str, str]) -> None:
+def _append_summary(report_markdown: pathlib.Path, env: dict[str, str]) -> None:
     summary_file = env.get("GITHUB_STEP_SUMMARY")
     if not summary_file or not report_markdown.exists():
         return
-    with Path(summary_file).open("a", encoding="utf-8") as handle:
+    with pathlib.Path(summary_file).open("a", encoding="utf-8") as handle:
         handle.write(report_markdown.read_text(encoding="utf-8"))
         handle.write("\n")
 
 
 def _publish_outputs(
     *,
-    report_json: Path,
-    report_markdown: Path,
+    report_json: pathlib.Path,
+    report_markdown: pathlib.Path,
     env: dict[str, str],
 ) -> None:
     verdict = "ERROR"
@@ -125,8 +125,10 @@ def main() -> int:
         print(f"AdapterGuard Action configuration error: {exc}", file=sys.stderr)
         return 2
 
-    report_json = Path(_value(env, "AG_REPORT_JSON") or ".adapterguard/report.json")
-    report_markdown = Path(_value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md")
+    report_json = pathlib.Path(_value(env, "AG_REPORT_JSON") or ".adapterguard/report.json")
+    report_markdown = pathlib.Path(
+        _value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md"
+    )
 
     result = subprocess.run(command, env=env, check=False)
     _publish_outputs(
