@@ -83,6 +83,22 @@ def test_quantized_artifact_is_fingerprinted_without_semantic_run(tmp_path):
     assert payload["fingerprints"]["quantized"]["mode"] == "sampled"
 
 
+def test_endpoint_requires_prompts(tmp_path):
+    adapter = _adapter(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "--adapter",
+            str(adapter),
+            "--endpoint",
+            "http://localhost:8000/v1",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "requires --prompts" in result.stdout
+
+
 def test_invalid_fingerprint_mode_returns_usage_error(tmp_path):
     adapter = _adapter(tmp_path)
     result = runner.invoke(
@@ -95,4 +111,4 @@ def test_invalid_fingerprint_mode_returns_usage_error(tmp_path):
 def test_version_command_is_plain_text():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.3.0"
+    assert result.stdout.strip() == "0.4.0"
