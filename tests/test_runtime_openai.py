@@ -1,4 +1,7 @@
+import pytest
+
 from adapterguard.models import RuntimePromptEvidence, Status
+from adapterguard.prompts import PromptCase
 from adapterguard.runtime_openai import (
     RuntimeCompletionResponse,
     _chat_completions_url,
@@ -56,7 +59,21 @@ def test_runtime_check_passes_when_greedy_outputs_match():
     assert result.metrics["first_token_agreement"] == 1.0
     assert result.metrics["exact_completion_match_rate"] == 1.0
     assert result.metrics["served_models"] == ["served/model"]
+    assert result.metrics["multi_turn_prompt_count"] == 0
     assert all(isinstance(item, RuntimePromptEvidence) for item in result.evidence)
+
+
+def test_text_runtime_rejects_messages_prompt_cases():
+    case = PromptCase(messages=({"role": "user", "content": "hello"},))
+
+    with pytest.raises(ValueError, match="chat-completions endpoint"):
+        run_openai_runtime_check(
+            endpoint="http://runtime:8000/v1",
+            model="served/model",
+            prompts=[case],
+            local_completions=[" answer"],
+            local_first_tokens=[" answer"],
+        )
 
 
 def test_chat_runtime_check_uses_chat_api_metrics():
@@ -81,6 +98,42 @@ def test_chat_runtime_check_uses_chat_api_metrics():
     assert result.metrics["runtime_api"] == "openai-chat-completions"
     assert result.metrics["endpoint"] == "http://runtime:8000/v1/chat/completions"
     assert result.metrics["exact_completion_match_rate"] == 1.0
+
+
+def test_chat_runtime_preserves_multi_turn_case_for_requester_and_evidence():
+    case = PromptCase(
+        messages=(
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+            {"role": "user", "content": "What did I say first?"},
+        )
+    )
+    captured = {}
+
+    def requester(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return RuntimeCompletionResponse(
+            text=" Hello",
+            tokens=[" Hello"],
+            served_model="served/chat-model",
+            latency_ms=2.0,
+        )
+
+    result = run_openai_chat_runtime_check(
+        endpoint="http://runtime:8000/v1/chat/completions",
+        model="served/chat-model",
+        prompts=[case],
+        local_completions=[" Hello"],
+        local_first_tokens=[" Hello"],
+        include_prompts=True,
+        requester=requester,
+    )
+
+    assert captured["prompt"] == case
+    assert result.status == Status.PASS
+    assert result.metrics["multi_turn_prompt_count"] == 1
+    assert '"messages"' in result.evidence[0].prompt
 
 
 def test_runtime_check_localizes_divergence_and_keeps_text_private_by_default():

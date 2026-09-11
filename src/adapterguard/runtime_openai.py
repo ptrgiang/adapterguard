@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .models import CheckResult, RuntimePromptEvidence, Status
+from .prompts import PromptCase, coerce_prompt_cases, prompt_case_from_value
 
 
 class RuntimeEndpointError(RuntimeError):
@@ -84,7 +85,10 @@ def _request_completion(
         "logprobs": 5,
     }
     raw, latency_ms = _post_json(
-        url=_completions_url(endpoint), payload=payload, api_key=api_key, timeout=timeout
+        url=_completions_url(endpoint),
+        payload=payload,
+        api_key=api_key,
+        timeout=timeout,
     )
 
     try:
@@ -111,21 +115,25 @@ def _request_chat_completion(
     *,
     endpoint: str,
     model: str,
-    prompt: str,
+    prompt: PromptCase | str,
     api_key: str | None,
     max_tokens: int,
     timeout: float,
 ) -> RuntimeCompletionResponse:
+    case = prompt_case_from_value(prompt)
     payload: dict[str, object] = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": case.as_messages(),
         "temperature": 0,
         "max_tokens": max_tokens,
         "logprobs": True,
         "top_logprobs": 5,
     }
     raw, latency_ms = _post_json(
-        url=_chat_completions_url(endpoint), payload=payload, api_key=api_key, timeout=timeout
+        url=_chat_completions_url(endpoint),
+        payload=payload,
+        api_key=api_key,
+        timeout=timeout,
     )
 
     try:
@@ -168,7 +176,7 @@ def _run_runtime_check(
     endpoint_url: str,
     runtime_api: str,
     model: str,
-    prompts: list[str],
+    prompts: list[PromptCase],
     local_completions: list[str],
     local_first_tokens: list[str],
     api_key: str | None,
@@ -178,6 +186,7 @@ def _run_runtime_check(
     min_exact_match_rate: float,
     include_prompts: bool,
     requester: Callable[..., RuntimeCompletionResponse],
+    request_value: Callable[[PromptCase], object],
 ) -> CheckResult:
     if not (len(prompts) == len(local_completions) == len(local_first_tokens)):
         raise ValueError("runtime reference lists must have the same length as prompts")
@@ -190,14 +199,14 @@ def _run_runtime_check(
     served_models: set[str] = set()
     evidence: list[RuntimePromptEvidence] = []
 
-    for index, (prompt, local_text, local_first) in enumerate(
+    for index, (case, local_text, local_first) in enumerate(
         zip(prompts, local_completions, local_first_tokens, strict=True),
         start=1,
     ):
         response = requester(
             endpoint=endpoint,
             model=model,
-            prompt=prompt,
+            prompt=request_value(case),
             api_key=api_key,
             max_tokens=max_tokens,
             timeout=timeout,
@@ -211,10 +220,11 @@ def _run_runtime_check(
         if response.served_model:
             served_models.add(response.served_model)
 
+        evidence_text = case.evidence_text
         evidence.append(
             RuntimePromptEvidence(
                 prompt_index=index,
-                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
+                prompt_sha256=hashlib.sha256(evidence_text.encode()).hexdigest(),
                 exact_match=exact_match,
                 first_token_match=first_match,
                 latency_ms=response.latency_ms,
@@ -222,7 +232,7 @@ def _run_runtime_check(
                 served_completion_sha256=hashlib.sha256(response.text.encode()).hexdigest(),
                 local_first_token=local_first if include_prompts else None,
                 served_first_token=served_first if include_prompts else None,
-                prompt=prompt if include_prompts else None,
+                prompt=evidence_text if include_prompts else None,
                 local_completion=local_text if include_prompts else None,
                 served_completion=response.text if include_prompts else None,
             )
@@ -246,6 +256,7 @@ def _run_runtime_check(
         "runtime_max_tokens": max_tokens,
         "budget_min_first_token_agreement": min_first_token_agreement,
         "budget_min_exact_match_rate": min_exact_match_rate,
+        "multi_turn_prompt_count": sum(int(case.is_chat) for case in prompts),
     }
     ok = first_rate >= min_first_token_agreement and exact_rate >= min_exact_match_rate
     return CheckResult(
@@ -259,11 +270,21 @@ def _run_runtime_check(
     )
 
 
+def _text_request_value(case: PromptCase) -> str:
+    if case.prompt is None:
+        raise ValueError("`messages` prompt cases require a chat-completions endpoint")
+    return case.prompt
+
+
+def _chat_request_value(case: PromptCase) -> PromptCase:
+    return case
+
+
 def run_openai_runtime_check(
     *,
     endpoint: str,
     model: str,
-    prompts: list[str],
+    prompts: list[PromptCase | str],
     local_completions: list[str],
     local_first_tokens: list[str],
     api_key: str | None = None,
@@ -274,12 +295,15 @@ def run_openai_runtime_check(
     include_prompts: bool = False,
     requester: Callable[..., RuntimeCompletionResponse] | None = None,
 ) -> CheckResult:
+    cases = coerce_prompt_cases(prompts)
+    if any(case.is_chat for case in cases):
+        raise ValueError("`messages` prompt cases require a chat-completions endpoint")
     return _run_runtime_check(
         endpoint=endpoint,
         endpoint_url=_completions_url(endpoint),
         runtime_api="openai-completions",
         model=model,
-        prompts=prompts,
+        prompts=cases,
         local_completions=local_completions,
         local_first_tokens=local_first_tokens,
         api_key=api_key,
@@ -289,6 +313,7 @@ def run_openai_runtime_check(
         min_exact_match_rate=min_exact_match_rate,
         include_prompts=include_prompts,
         requester=requester or _request_completion,
+        request_value=_text_request_value,
     )
 
 
@@ -296,7 +321,7 @@ def run_openai_chat_runtime_check(
     *,
     endpoint: str,
     model: str,
-    prompts: list[str],
+    prompts: list[PromptCase | str],
     local_completions: list[str],
     local_first_tokens: list[str],
     api_key: str | None = None,
@@ -312,7 +337,7 @@ def run_openai_chat_runtime_check(
         endpoint_url=_chat_completions_url(endpoint),
         runtime_api="openai-chat-completions",
         model=model,
-        prompts=prompts,
+        prompts=coerce_prompt_cases(prompts),
         local_completions=local_completions,
         local_first_tokens=local_first_tokens,
         api_key=api_key,
@@ -322,4 +347,5 @@ def run_openai_chat_runtime_check(
         min_exact_match_rate=min_exact_match_rate,
         include_prompts=include_prompts,
         requester=requester or _request_chat_completion,
+        request_value=_chat_request_value,
     )

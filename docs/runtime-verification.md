@@ -1,7 +1,7 @@
 # Runtime verification
 
 AdapterGuard v0.5 can compare a verified local artifact with OpenAI-compatible text-completion and
-single-turn chat-completion endpoints such as vLLM.
+chat-completion endpoints such as vLLM.
 
 ## Why this check exists
 
@@ -40,7 +40,8 @@ adapterguard verify \
 ```
 
 A server root, `/v1`, or complete `/v1/completions` URL selects the normal text-completions
-verifier.
+verifier. Text-completion verification accepts only text prompt cases because the endpoint itself
+has no chat-message semantics.
 
 ## Chat completions
 
@@ -50,27 +51,53 @@ To verify an OpenAI-compatible chat endpoint, pass the complete chat-completions
 adapterguard verify \
   --base Qwen/Qwen3-8B \
   --adapter ./adapter \
-  --prompts tests/golden.jsonl \
+  --prompts examples/messages.jsonl \
   --endpoint http://localhost:8000/v1/chat/completions \
   --runtime-model qwen3-chat-prod \
   --require-level runtime
 ```
 
-For each JSONL `prompt`, AdapterGuard sends one user message:
+Chat verification accepts both the original text format and native multi-turn `messages` cases.
+A text prompt is treated as one user message:
 
 ```json
-{"role": "user", "content": "...prompt..."}
+{"prompt":"Explain gradient descent simply."}
 ```
 
-The local reference applies the base tokenizer's configured chat template with
-`add_generation_prompt=true` before greedy generation. This matters because comparing a raw local
-prompt against a server-rendered chat prompt would not be the same inference input.
+A native conversation keeps the supplied history intact:
 
-Chat verification currently requires the tokenizer to define a chat template. If it does not,
-AdapterGuard fails explicitly instead of silently falling back to raw text.
+```json
+{"messages":[
+  {"role":"system","content":"You are concise and factual."},
+  {"role":"user","content":"My order ID is A-102. Remember it."},
+  {"role":"assistant","content":"Understood."},
+  {"role":"user","content":"What order ID did I give you?"}
+]}
+```
 
-Current chat support is intentionally **single-turn**. Native JSONL `messages` arrays and multi-turn
-conversation verification remain future extensions.
+Each `messages` entry currently requires string `role` and string `content`. Multimodal content
+arrays are rejected explicitly until multimodal verification is implemented.
+
+For the local reference, AdapterGuard applies the base tokenizer's configured chat template to the
+same message history with `add_generation_prompt=true`, then performs deterministic greedy
+generation. The runtime request sends the original messages array to `/v1/chat/completions`.
+
+This prevents a false comparison between raw local text and a server-rendered conversation. It also
+means tokenizer integrity checks automatically compare chat-template rendering and resulting token
+IDs for native `messages` cases, even when no runtime endpoint is supplied.
+
+Chat verification requires the tokenizer to define a chat template. If it does not, AdapterGuard
+fails explicitly instead of silently falling back to raw text.
+
+## Prompt privacy and evidence
+
+Text prompts are hashed directly. Native chat histories are converted to deterministic canonical
+JSON before hashing, so the evidence fingerprint is stable without exposing the conversation.
+`--include-prompts` stores that canonical representation in the report for debugging; leave it off
+for sensitive production prompts.
+
+Runtime metrics include `multi_turn_prompt_count`, making it visible whether the gate actually
+covered conversation histories instead of only single user turns.
 
 ## Authentication
 
@@ -91,7 +118,7 @@ The key is never written to AdapterGuard reports.
 
 ## Comparison method
 
-For each golden prompt AdapterGuard generates a deterministic greedy completion from the selected
+For each golden input AdapterGuard generates a deterministic greedy completion from the selected
 local reference and requests the corresponding greedy completion from the endpoint.
 
 Text-completion requests use:
@@ -119,6 +146,7 @@ AdapterGuard records:
 - per-prompt local and served completion SHA-256 values;
 - mean, p50, p95 and max request latency;
 - requested model and model identifiers returned by the endpoint;
+- number of native multi-turn conversation cases;
 - the local reference artifact used for comparison.
 
 Raw prompts and completions are excluded by default. `--include-prompts` explicitly enables them
@@ -144,6 +172,7 @@ A runtime policy failure exits with code `1`, so it can directly gate deployment
 
 ## Current scope
 
-v0.5 covers OpenAI-compatible `/v1/completions` and single-turn `/v1/chat/completions` verification.
-TGI-specific adapters, native GGUF/llama.cpp comparison, multi-turn chat inputs, and
-runtime-to-runtime drift matrices remain future work.
+v0.5 covers OpenAI-compatible `/v1/completions` plus single-turn and native multi-turn
+`/v1/chat/completions` verification with text-only message content. TGI-specific adapters, native
+GGUF/llama.cpp comparison, multimodal message content, and runtime-to-runtime drift matrices remain
+future work.
