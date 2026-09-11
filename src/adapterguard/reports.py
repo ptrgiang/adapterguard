@@ -69,6 +69,10 @@ def render_markdown(report: VerificationReport) -> str:
         "# AdapterGuard verification report",
         "",
         f"**Verdict:** {report.verdict}",
+        f"**Verification level:** `{report.verification_level.value}`",
+        f"**Required level:** `{report.required_level.value}`",
+        f"**Policy passed:** `{str(report.policy_passed).lower()}`",
+        f"**Safe to ship:** `{str(report.safe_to_ship).lower()}`",
         "",
     ]
 
