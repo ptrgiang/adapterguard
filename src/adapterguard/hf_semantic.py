@@ -468,7 +468,9 @@ def run_semantic_checks(
             max_tokens=runtime_max_tokens,
             use_chat_template=chat_runtime,
         )
-        runtime_checker = run_openai_chat_runtime_check if chat_runtime else run_openai_runtime_check
+        runtime_checker = (
+            run_openai_chat_runtime_check if chat_runtime else run_openai_runtime_check
+        )
         runtime_check = runtime_checker(
             endpoint=runtime_endpoint,
             model=runtime_model,
