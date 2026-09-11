@@ -103,7 +103,7 @@ def _comparison_metrics(
     tokenizer,
     prompts: list[str],
     include_prompts: bool,
-) -> tuple[dict[str, float], list[PromptEvidence]]:
+) -> tuple[dict[str, Any], list[PromptEvidence]]:
     total_abs = 0.0
     total_values = 0
     max_abs = 0.0
@@ -163,12 +163,71 @@ def _comparison_metrics(
             )
         )
 
-    metrics = {
+    metrics: dict[str, Any] = {
         "mean_abs_logit_diff": total_abs / total_values if total_values else 0.0,
         "max_abs_logit_diff": max_abs,
         "top1_token_agreement": top1_matches / top1_total if top1_total else 1.0,
     }
     return metrics, evidence
+
+
+def _within_drift_budget(
+    metrics: dict[str, Any],
+    *,
+    max_mean_abs_logit_diff: float,
+    min_top1_token_agreement: float,
+) -> bool:
+    return (
+        float(metrics["mean_abs_logit_diff"]) <= max_mean_abs_logit_diff
+        and float(metrics["top1_token_agreement"]) >= min_top1_token_agreement
+    )
+
+
+def _summarize_evidence(evidence: list[PromptEvidence]) -> dict[str, Any]:
+    if not evidence:
+        return {
+            "prompt_count": 0,
+            "divergent_prompt_count": 0,
+            "worst_prompt_index": None,
+            "worst_prompt_mean_abs_logit_diff": 0.0,
+        }
+
+    divergent = [item for item in evidence if item.first_divergent_position is not None]
+    worst = max(evidence, key=lambda item: item.mean_abs_logit_diff)
+    return {
+        "prompt_count": len(evidence),
+        "divergent_prompt_count": len(divergent),
+        "worst_prompt_index": worst.prompt_index,
+        "worst_prompt_mean_abs_logit_diff": worst.mean_abs_logit_diff,
+    }
+
+
+def _quantization_metadata(model) -> dict[str, Any]:
+    config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if config is None:
+        return {"quantization_declared": False}
+    if hasattr(config, "to_dict"):
+        config = config.to_dict()
+    if not isinstance(config, dict):
+        return {
+            "quantization_declared": True,
+            "quantization_config_type": type(config).__name__,
+        }
+
+    method = config.get("quant_method") or config.get("quantization_method")
+    bits = config.get("bits")
+    if bits is None:
+        if config.get("load_in_4bit"):
+            bits = 4
+        elif config.get("load_in_8bit"):
+            bits = 8
+
+    metadata: dict[str, Any] = {"quantization_declared": True}
+    if method is not None:
+        metadata["quantization_method"] = str(method)
+    if bits is not None:
+        metadata["quantization_bits"] = int(bits)
+    return metadata
 
 
 def run_semantic_checks(
@@ -177,12 +236,15 @@ def run_semantic_checks(
     adapter_path: str | Path,
     prompts_path: str | Path,
     merged_model: str | None = None,
+    quantized_model: str | None = None,
     device: str = "auto",
     dtype: str = "auto",
     max_prompts: int = 8,
     effect_threshold: float = 1e-6,
     max_merge_diff: float = 1e-3,
     min_top1_agreement: float = 0.999,
+    max_quantized_diff: float = 0.05,
+    min_quantized_top1_agreement: float = 0.98,
     include_prompts: bool = False,
 ) -> list[CheckResult]:
     torch, PeftModel, AutoModelForCausalLM, AutoTokenizer = _imports()
@@ -248,9 +310,10 @@ def run_semantic_checks(
         prompts=prompts,
         include_prompts=include_prompts,
     )
-    merge_ok = (
-        merge_metrics["mean_abs_logit_diff"] <= max_merge_diff
-        and merge_metrics["top1_token_agreement"] >= min_top1_agreement
+    merge_ok = _within_drift_budget(
+        merge_metrics,
+        max_mean_abs_logit_diff=max_merge_diff,
+        min_top1_token_agreement=min_top1_agreement,
     )
     checks.append(
         CheckResult(
@@ -278,9 +341,10 @@ def run_semantic_checks(
             prompts=prompts,
             include_prompts=include_prompts,
         )
-        export_ok = (
-            export_metrics["mean_abs_logit_diff"] <= max_merge_diff
-            and export_metrics["top1_token_agreement"] >= min_top1_agreement
+        export_ok = _within_drift_budget(
+            export_metrics,
+            max_mean_abs_logit_diff=max_merge_diff,
+            min_top1_token_agreement=min_top1_agreement,
         )
         checks.append(
             CheckResult(
@@ -291,6 +355,41 @@ def run_semantic_checks(
                 else "exported model diverges from the active adapter",
                 export_metrics,
                 export_evidence,
+            )
+        )
+
+    if quantized_model:
+        quantized = AutoModelForCausalLM.from_pretrained(quantized_model, **model_kwargs)
+        if device != "auto":
+            quantized = quantized.to(device)
+        quantized.eval()
+        quantized_logits = _prompt_logits(quantized, tokenizer, prompts, torch)
+        quant_metrics, quant_evidence = _comparison_metrics(
+            merged_logits,
+            quantized_logits,
+            torch=torch,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            include_prompts=include_prompts,
+        )
+        quant_metrics.update(_summarize_evidence(quant_evidence))
+        quant_metrics.update(_quantization_metadata(quantized))
+        quant_metrics["budget_max_mean_abs_logit_diff"] = max_quantized_diff
+        quant_metrics["budget_min_top1_token_agreement"] = min_quantized_top1_agreement
+        quant_ok = _within_drift_budget(
+            quant_metrics,
+            max_mean_abs_logit_diff=max_quantized_diff,
+            min_top1_token_agreement=min_quantized_top1_agreement,
+        )
+        checks.append(
+            CheckResult(
+                "quantized model preserves merged behavior",
+                Status.PASS if quant_ok else Status.FAIL,
+                "quantized artifact stays within the configured drift budget"
+                if quant_ok
+                else "quantized artifact exceeds the configured drift budget",
+                quant_metrics,
+                quant_evidence,
             )
         )
 

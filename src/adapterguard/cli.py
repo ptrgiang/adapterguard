@@ -65,6 +65,7 @@ def _collect_fingerprints(
     adapter: Path,
     base: str | None,
     merged: str | None,
+    quantized: str | None,
     mode: str,
 ) -> dict[str, ArtifactFingerprint]:
     fingerprints: dict[str, ArtifactFingerprint] = {}
@@ -72,6 +73,7 @@ def _collect_fingerprints(
         ("adapter", adapter),
         ("base", base),
         ("merged", merged),
+        ("quantized", quantized),
     ]
     for label, source in sources:
         if source is None:
@@ -100,6 +102,13 @@ def verify(
         str | None,
         typer.Option("--merged", help="Optional exported/merged model ID or local path."),
     ] = None,
+    quantized: Annotated[
+        str | None,
+        typer.Option(
+            "--quantized",
+            help="Optional quantized model ID/path to compare against the in-memory merge.",
+        ),
+    ] = None,
     device: Annotated[
         str, typer.Option("--device", help="auto, cpu, cuda, cuda:0, mps...")
     ] = "auto",
@@ -127,6 +136,23 @@ def verify(
             help="Minimum token-level top-1 agreement after merge/export.",
         ),
     ] = 0.999,
+    max_quantized_diff: Annotated[
+        float,
+        typer.Option(
+            "--max-quantized-diff",
+            min=0.0,
+            help="Maximum mean absolute logit drift allowed after quantization.",
+        ),
+    ] = 0.05,
+    min_quantized_top1_agreement: Annotated[
+        float,
+        typer.Option(
+            "--min-quantized-top1-agreement",
+            min=0.0,
+            max=1.0,
+            help="Minimum token-level top-1 agreement allowed after quantization.",
+        ),
+    ] = 0.98,
     include_prompts: Annotated[
         bool,
         typer.Option(
@@ -158,7 +184,6 @@ def verify(
     if fingerprint_mode not in {"sampled", "full", "off"}:
         console.print("[red]--fingerprint-mode must be sampled, full, or off.[/red]")
         raise typer.Exit(code=2)
-
     config, checks = run_static_checks(adapter, expected_base=base)
 
     resolved_base = base
@@ -178,11 +203,14 @@ def verify(
                     adapter_path=adapter,
                     prompts_path=prompts,
                     merged_model=merged,
+                    quantized_model=quantized,
                     device=device,
                     dtype=dtype,
                     max_prompts=max_prompts,
                     max_merge_diff=max_merge_diff,
                     min_top1_agreement=min_top1_agreement,
+                    max_quantized_diff=max_quantized_diff,
+                    min_quantized_top1_agreement=min_quantized_top1_agreement,
                     include_prompts=include_prompts,
                 )
             )
@@ -198,6 +226,7 @@ def verify(
             adapter=adapter,
             base=resolved_base,
             merged=merged,
+            quantized=quantized,
             mode=fingerprint_mode,
         )
     except (OSError, ValueError) as exc:
