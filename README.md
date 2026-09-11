@@ -1,5 +1,10 @@
 # AdapterGuard
 
+[![CI](https://github.com/ptrgiang/adapterguard/actions/workflows/ci.yml/badge.svg)](https://github.com/ptrgiang/adapterguard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ptrgiang/adapterguard)](https://github.com/ptrgiang/adapterguard/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/ptrgiang/adapterguard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **Know your adapter still works before you ship it.**
 
 AdapterGuard is an independent semantic integrity checker for LoRA, QLoRA, DoRA and other PEFT
@@ -15,8 +20,9 @@ and CI release gates.
 
 ## GitHub Action — release gate in a few lines
 
-AdapterGuard ships as a reusable composite Action. Until the first versioned Action release is
-published, use `@main`; pin a released tag or immutable commit SHA for production once available.
+AdapterGuard ships as a reusable composite Action. `v0.4.1` is the first stable Action release.
+Pin `@v0.4.1` for normal versioned usage; security-sensitive production workflows can pin the
+immutable release commit SHA instead.
 
 ```yaml
 name: Model integrity
@@ -32,7 +38,7 @@ jobs:
 
       - name: Verify model artifact
         id: guard
-        uses: ptrgiang/adapterguard@main
+        uses: ptrgiang/adapterguard@v0.4.1
         with:
           adapter: ./adapter
           base: Qwen/Qwen3-8B
@@ -46,7 +52,7 @@ For a deployed vLLM/OpenAI-compatible endpoint:
 
 ```yaml
 - name: Verify deployed runtime
-  uses: ptrgiang/adapterguard@main
+  uses: ptrgiang/adapterguard@v0.4.1
   with:
     adapter: ./adapter
     base: Qwen/Qwen3-8B
