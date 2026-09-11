@@ -26,35 +26,29 @@ class RuntimeCompletionResponse:
 
 def _completions_url(endpoint: str) -> str:
     normalized = endpoint.rstrip("/")
-    if normalized.endswith("/completions"):
+    if normalized.endswith("/completions") and not normalized.endswith("/chat/completions"):
         return normalized
     if normalized.endswith("/v1"):
         return f"{normalized}/completions"
     return f"{normalized}/v1/completions"
 
 
-def _request_completion(
-    *,
-    endpoint: str,
-    model: str,
-    prompt: str,
-    api_key: str | None,
-    max_tokens: int,
-    timeout: float,
-) -> RuntimeCompletionResponse:
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "temperature": 0,
-        "max_tokens": max_tokens,
-        "logprobs": 5,
-    }
+def _chat_completions_url(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
+
+
+def _post_json(*, url: str, payload: dict[str, object], api_key: str | None, timeout: float):
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     request = Request(
-        _completions_url(endpoint),
+        url,
         data=json.dumps(payload).encode("utf-8"),
         headers=headers,
         method="POST",
@@ -70,7 +64,28 @@ def _request_completion(
         ) from exc
     except URLError as exc:
         raise RuntimeEndpointError(f"runtime endpoint request failed: {exc.reason}") from exc
-    latency_ms = (time.perf_counter() - started) * 1000.0
+    return raw, (time.perf_counter() - started) * 1000.0
+
+
+def _request_completion(
+    *,
+    endpoint: str,
+    model: str,
+    prompt: str,
+    api_key: str | None,
+    max_tokens: int,
+    timeout: float,
+) -> RuntimeCompletionResponse:
+    payload: dict[str, object] = {
+        "model": model,
+        "prompt": prompt,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "logprobs": 5,
+    }
+    raw, latency_ms = _post_json(
+        url=_completions_url(endpoint), payload=payload, api_key=api_key, timeout=timeout
+    )
 
     try:
         data = json.loads(raw)
@@ -92,6 +107,49 @@ def _request_completion(
     )
 
 
+def _request_chat_completion(
+    *,
+    endpoint: str,
+    model: str,
+    prompt: str,
+    api_key: str | None,
+    max_tokens: int,
+    timeout: float,
+) -> RuntimeCompletionResponse:
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "logprobs": True,
+        "top_logprobs": 5,
+    }
+    raw, latency_ms = _post_json(
+        url=_chat_completions_url(endpoint), payload=payload, api_key=api_key, timeout=timeout
+    )
+
+    try:
+        data = json.loads(raw)
+        choice = data["choices"][0]
+        message = choice.get("message") or {}
+        text = str(message.get("content") or "")
+        logprobs = choice.get("logprobs") or {}
+        content_logprobs = logprobs.get("content") or []
+        tokens = [str(item.get("token") or "") for item in content_logprobs if isinstance(item, dict)]
+        served_model = data.get("model")
+    except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
+        raise RuntimeEndpointError(
+            "runtime endpoint returned an invalid chat completion payload"
+        ) from exc
+
+    return RuntimeCompletionResponse(
+        text=text,
+        tokens=tokens,
+        served_model=str(served_model) if served_model is not None else None,
+        latency_ms=latency_ms,
+    )
+
+
 def _percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
@@ -100,27 +158,28 @@ def _percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def run_openai_runtime_check(
+def _run_runtime_check(
     *,
     endpoint: str,
+    endpoint_url: str,
+    runtime_api: str,
     model: str,
     prompts: list[str],
     local_completions: list[str],
     local_first_tokens: list[str],
-    api_key: str | None = None,
-    max_tokens: int = 8,
-    timeout: float = 30.0,
-    min_first_token_agreement: float = 1.0,
-    min_exact_match_rate: float = 1.0,
-    include_prompts: bool = False,
-    requester: Callable[..., RuntimeCompletionResponse] | None = None,
+    api_key: str | None,
+    max_tokens: int,
+    timeout: float,
+    min_first_token_agreement: float,
+    min_exact_match_rate: float,
+    include_prompts: bool,
+    requester: Callable[..., RuntimeCompletionResponse],
 ) -> CheckResult:
     if not (len(prompts) == len(local_completions) == len(local_first_tokens)):
         raise ValueError("runtime reference lists must have the same length as prompts")
     if not prompts:
         raise ValueError("runtime verification requires at least one prompt")
 
-    request_fn = requester or _request_completion
     exact_matches = 0
     first_matches = 0
     latencies: list[float] = []
@@ -131,7 +190,7 @@ def run_openai_runtime_check(
         zip(prompts, local_completions, local_first_tokens, strict=True),
         start=1,
     ):
-        response = request_fn(
+        response = requester(
             endpoint=endpoint,
             model=model,
             prompt=prompt,
@@ -169,8 +228,8 @@ def run_openai_runtime_check(
     first_rate = first_matches / prompt_count
     exact_rate = exact_matches / prompt_count
     metrics = {
-        "runtime_api": "openai-completions",
-        "endpoint": _completions_url(endpoint),
+        "runtime_api": runtime_api,
+        "endpoint": endpoint_url,
         "requested_model": model,
         "served_models": sorted(served_models),
         "prompt_count": prompt_count,
@@ -193,4 +252,70 @@ def run_openai_runtime_check(
         else "OpenAI-compatible runtime diverges from the verified local artifact",
         metrics,
         evidence,
+    )
+
+
+def run_openai_runtime_check(
+    *,
+    endpoint: str,
+    model: str,
+    prompts: list[str],
+    local_completions: list[str],
+    local_first_tokens: list[str],
+    api_key: str | None = None,
+    max_tokens: int = 8,
+    timeout: float = 30.0,
+    min_first_token_agreement: float = 1.0,
+    min_exact_match_rate: float = 1.0,
+    include_prompts: bool = False,
+    requester: Callable[..., RuntimeCompletionResponse] | None = None,
+) -> CheckResult:
+    return _run_runtime_check(
+        endpoint=endpoint,
+        endpoint_url=_completions_url(endpoint),
+        runtime_api="openai-completions",
+        model=model,
+        prompts=prompts,
+        local_completions=local_completions,
+        local_first_tokens=local_first_tokens,
+        api_key=api_key,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        min_first_token_agreement=min_first_token_agreement,
+        min_exact_match_rate=min_exact_match_rate,
+        include_prompts=include_prompts,
+        requester=requester or _request_completion,
+    )
+
+
+def run_openai_chat_runtime_check(
+    *,
+    endpoint: str,
+    model: str,
+    prompts: list[str],
+    local_completions: list[str],
+    local_first_tokens: list[str],
+    api_key: str | None = None,
+    max_tokens: int = 8,
+    timeout: float = 30.0,
+    min_first_token_agreement: float = 1.0,
+    min_exact_match_rate: float = 1.0,
+    include_prompts: bool = False,
+    requester: Callable[..., RuntimeCompletionResponse] | None = None,
+) -> CheckResult:
+    return _run_runtime_check(
+        endpoint=endpoint,
+        endpoint_url=_chat_completions_url(endpoint),
+        runtime_api="openai-chat-completions",
+        model=model,
+        prompts=prompts,
+        local_completions=local_completions,
+        local_first_tokens=local_first_tokens,
+        api_key=api_key,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        min_first_token_agreement=min_first_token_agreement,
+        min_exact_match_rate=min_exact_match_rate,
+        include_prompts=include_prompts,
+        requester=requester or _request_chat_completion,
     )
