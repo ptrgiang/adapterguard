@@ -74,6 +74,12 @@ def _build_tokenizer(Tokenizer, WordLevel, Whitespace, PreTrainedTokenizerFast):
     )
 
 
+def _metric_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
 def main() -> int:
     (
         torch,
@@ -180,7 +186,8 @@ def main() -> int:
 
         for check in checks:
             metrics = ", ".join(
-                f"{key}={value:.6g}" for key, value in (check.metrics or {}).items()
+                f"{key}={_metric_value(value)}"
+                for key, value in (check.metrics or {}).items()
             )
             print(f"{check.status.value.upper():4}  {check.name}")
             if metrics:
