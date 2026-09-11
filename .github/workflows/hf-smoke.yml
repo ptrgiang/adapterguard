@@ -9,6 +9,7 @@ on:
       - "src/adapterguard/runtime_openai.py"
       - "examples/killer_demo.py"
       - "examples/quantization_demo.py"
+      - "examples/tokenizer_drift_demo.py"
       - ".github/workflows/hf-smoke.yml"
       - "pyproject.toml"
   schedule:
@@ -37,3 +38,5 @@ jobs:
         run: python examples/killer_demo.py
       - name: Run quantization-drift semantic proof
         run: python examples/quantization_demo.py
+      - name: Run tokenizer-drift semantic proof
+        run: python examples/tokenizer_drift_demo.py

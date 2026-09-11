@@ -89,6 +89,120 @@ def _prompt_logits(model, tokenizer, prompts: list[str], torch):
     return runs
 
 
+def _render_chat_prompt(tokenizer, prompt: str) -> str:
+    if not getattr(tokenizer, "chat_template", None):
+        raise ValueError("tokenizer does not define a chat template")
+    return tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+
+def _token_ids(tokenizer, text: str) -> list[int]:
+    encoded = tokenizer(text, truncation=True)
+    ids = encoded["input_ids"]
+    return [int(token_id) for token_id in ids]
+
+
+def _tokenizer_integrity_check(
+    *,
+    base_tokenizer,
+    artifact_tokenizer,
+    prompts: list[str],
+    artifact_label: str,
+    check_chat_template: bool,
+) -> CheckResult:
+    raw_matches = 0
+    chat_encoding_matches = 0
+    chat_render_matches = 0
+    mismatched_prompt_indices: list[int] = []
+
+    for index, prompt in enumerate(prompts, start=1):
+        base_raw = _token_ids(base_tokenizer, prompt)
+        artifact_raw = _token_ids(artifact_tokenizer, prompt)
+        raw_match = base_raw == artifact_raw
+        raw_matches += int(raw_match)
+
+        chat_encoding_match = True
+        chat_render_match = True
+        if check_chat_template:
+            try:
+                base_rendered = _render_chat_prompt(base_tokenizer, prompt)
+                artifact_rendered = _render_chat_prompt(artifact_tokenizer, prompt)
+            except ValueError:
+                chat_encoding_match = False
+                chat_render_match = False
+            else:
+                chat_render_match = base_rendered == artifact_rendered
+                chat_encoding_match = _token_ids(
+                    base_tokenizer, base_rendered
+                ) == _token_ids(artifact_tokenizer, artifact_rendered)
+            chat_encoding_matches += int(chat_encoding_match)
+            chat_render_matches += int(chat_render_match)
+
+        if not raw_match or not chat_encoding_match or not chat_render_match:
+            mismatched_prompt_indices.append(index)
+
+    prompt_count = len(prompts)
+    metrics: dict[str, Any] = {
+        "artifact": artifact_label,
+        "prompt_count": prompt_count,
+        "exact_encoding_match_rate": raw_matches / prompt_count,
+        "mismatched_prompt_count": len(mismatched_prompt_indices),
+        "mismatched_prompt_indices": mismatched_prompt_indices,
+        "chat_template_checked": check_chat_template,
+    }
+    if check_chat_template:
+        metrics["chat_encoding_match_rate"] = chat_encoding_matches / prompt_count
+        metrics["chat_render_match_rate"] = chat_render_matches / prompt_count
+
+    ok = not mismatched_prompt_indices
+    return CheckResult(
+        f"{artifact_label} tokenizer preserves prompt encoding",
+        Status.PASS if ok else Status.FAIL,
+        "artifact tokenizer preserves base prompt encoding"
+        if ok
+        else "artifact tokenizer or chat template changes model input encoding",
+        metrics,
+    )
+
+
+def _load_artifact_tokenizer_check(
+    *,
+    AutoTokenizer,
+    source: str,
+    base_tokenizer,
+    prompts: list[str],
+    artifact_label: str,
+    check_chat_template: bool,
+) -> CheckResult:
+    try:
+        artifact_tokenizer = AutoTokenizer.from_pretrained(source)
+    except (OSError, ValueError) as exc:
+        return CheckResult(
+            f"{artifact_label} tokenizer preserves prompt encoding",
+            Status.WARN,
+            "artifact tokenizer could not be loaded; tokenizer drift was not verified",
+            {
+                "artifact": artifact_label,
+                "tokenizer_available": False,
+                "error_type": type(exc).__name__,
+            },
+        )
+
+    check = _tokenizer_integrity_check(
+        base_tokenizer=base_tokenizer,
+        artifact_tokenizer=artifact_tokenizer,
+        prompts=prompts,
+        artifact_label=artifact_label,
+        check_chat_template=check_chat_template,
+    )
+    if check.metrics is not None:
+        check.metrics["tokenizer_available"] = True
+    return check
+
+
 def _greedy_completion_reference(
     model,
     tokenizer,
@@ -106,17 +220,7 @@ def _greedy_completion_reference(
         pad_token_id = tokenizer.eos_token_id
 
     for prompt in prompts:
-        input_text = prompt
-        if use_chat_template:
-            if not getattr(tokenizer, "chat_template", None):
-                raise ValueError(
-                    "chat-completions runtime verification requires a tokenizer chat template"
-                )
-            input_text = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+        input_text = _render_chat_prompt(tokenizer, prompt) if use_chat_template else prompt
         encoded = tokenizer(input_text, return_tensors="pt", truncation=True)
         encoded = {key: value.to(device) for key, value in encoded.items()}
         input_length = int(encoded["input_ids"].shape[-1])
@@ -315,6 +419,9 @@ def run_semantic_checks(
     torch, PeftModel, AutoModelForCausalLM, AutoTokenizer = _imports()
     prompts = load_prompts(prompts_path, max_prompts)
     torch_dtype = _resolve_dtype(torch, dtype)
+    chat_runtime = bool(
+        runtime_endpoint and runtime_endpoint.rstrip("/").endswith("/chat/completions")
+    )
 
     model_kwargs: dict[str, Any] = {"torch_dtype": torch_dtype}
     if device == "auto":
@@ -387,6 +494,16 @@ def run_semantic_checks(
     runtime_reference_label = "in-memory-merged"
 
     if merged_model:
+        checks.append(
+            _load_artifact_tokenizer_check(
+                AutoTokenizer=AutoTokenizer,
+                source=merged_model,
+                base_tokenizer=tokenizer,
+                prompts=prompts,
+                artifact_label="exported model",
+                check_chat_template=chat_runtime,
+            )
+        )
         exported = AutoModelForCausalLM.from_pretrained(merged_model, **model_kwargs)
         if device != "auto":
             exported = exported.to(device)
@@ -420,6 +537,16 @@ def run_semantic_checks(
         runtime_reference_label = "exported-merged"
 
     if quantized_model:
+        checks.append(
+            _load_artifact_tokenizer_check(
+                AutoTokenizer=AutoTokenizer,
+                source=quantized_model,
+                base_tokenizer=tokenizer,
+                prompts=prompts,
+                artifact_label="quantized model",
+                check_chat_template=chat_runtime,
+            )
+        )
         quantized = AutoModelForCausalLM.from_pretrained(quantized_model, **model_kwargs)
         if device != "auto":
             quantized = quantized.to(device)
@@ -459,7 +586,6 @@ def run_semantic_checks(
     if runtime_endpoint:
         if not runtime_model:
             raise ValueError("runtime verification requires a served model name")
-        chat_runtime = runtime_endpoint.rstrip("/").endswith("/chat/completions")
         local_completions, local_first_tokens = _greedy_completion_reference(
             runtime_reference,
             tokenizer,
