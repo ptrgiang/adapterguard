@@ -15,6 +15,31 @@ train -> save adapter -> reload -> merge -> quantize -> export -> serve
 Each transformation can silently change behavior. A model can load successfully and still be
 wrong. AdapterGuard makes those failures visible and CI-friendly.
 
+## 60-second proof
+
+AdapterGuard includes a self-contained demo that needs **no pretrained model download**. It builds
+a tiny local GPT-2 model, attaches a real LoRA adapter, performs a valid merge, deliberately
+corrupts the exported model while keeping it loadable, and proves that AdapterGuard catches the
+semantic divergence.
+
+```bash
+pip install -e ".[hf]"
+python examples/killer_demo.py
+```
+
+Expected final result:
+
+```text
+PASS  adapter changes model behavior
+PASS  merge preserves adapter behavior
+FAIL  exported model preserves adapter behavior
+
+DEMO PASS: AdapterGuard caught a loadable but semantically corrupted artifact.
+```
+
+This is the failure class the project exists to catch: **syntactically valid artifact, wrong
+behavior**.
+
 ## What v0.1 checks
 
 **Static checks (fast, no model load):**
@@ -149,6 +174,7 @@ That distinction is the project.
 - [x] active-adapter-vs-merge comparison
 - [x] exported model comparison
 - [x] JSON output and CI-safe exit codes
+- [x] self-contained corrupted-artifact proof
 
 ### v0.2 — reproducible evidence
 
