@@ -82,6 +82,10 @@ inputs:
     description: Minimum top-1 token agreement after quantization.
     required: false
     default: "0.98"
+  require-level:
+    description: Minimum verification coverage required to pass policy.
+    required: false
+    default: "static"
   fingerprint-mode:
     description: sampled, full, or off.
     required: false
@@ -113,11 +117,20 @@ inputs:
 
 outputs:
   verdict:
-    description: SAFE TO SHIP, UNSAFE TO SHIP, or ERROR.
+    description: SAFE TO SHIP, STATIC CHECKS PASS, UNSAFE TO SHIP, or ERROR.
     value: ${{ steps.verify.outputs.verdict }}
   safe-to-ship:
-    description: "\"true\" when no verification check failed."
+    description: "true only when semantic-or-stronger verification passed policy."
     value: ${{ steps.verify.outputs.safe_to_ship }}
+  policy-passed:
+    description: "true when checks pass and requested verification coverage is satisfied."
+    value: ${{ steps.verify.outputs.policy_passed }}
+  verification-level:
+    description: Actual verification coverage reached.
+    value: ${{ steps.verify.outputs.verification_level }}
+  required-level:
+    description: Minimum verification coverage requested by policy.
+    value: ${{ steps.verify.outputs.required_level }}
   report-json:
     description: Absolute path to the JSON evidence report.
     value: ${{ steps.verify.outputs.report_json }}
@@ -168,6 +181,7 @@ runs:
         AG_MIN_TOP1_AGREEMENT: ${{ inputs.min-top1-agreement }}
         AG_MAX_QUANTIZED_DIFF: ${{ inputs.max-quantized-diff }}
         AG_MIN_QUANTIZED_TOP1_AGREEMENT: ${{ inputs.min-quantized-top1-agreement }}
+        AG_REQUIRE_LEVEL: ${{ inputs.require-level }}
         AG_FINGERPRINT_MODE: ${{ inputs.fingerprint-mode }}
         AG_INCLUDE_PROMPTS: ${{ inputs.include-prompts }}
         AG_REPORT_JSON: ${{ inputs.report-json }}
