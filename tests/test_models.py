@@ -3,6 +3,7 @@ from adapterguard.models import (
     CheckResult,
     PromptEvidence,
     Status,
+    VerificationLevel,
     VerificationReport,
 )
 
@@ -15,11 +16,12 @@ def test_report_fails_when_any_check_fails():
         ]
     )
 
+    assert report.policy_passed is False
     assert report.safe_to_ship is False
     assert report.verdict == "UNSAFE TO SHIP"
 
 
-def test_report_allows_warnings():
+def test_static_report_allows_warnings_without_claiming_safe_to_ship():
     report = VerificationReport(
         [
             CheckResult("a", Status.PASS, "ok"),
@@ -27,7 +29,35 @@ def test_report_allows_warnings():
         ]
     )
 
+    assert report.policy_passed is True
+    assert report.safe_to_ship is False
+    assert report.verdict == "STATIC CHECKS PASS"
+
+
+def test_semantic_report_can_be_safe_to_ship():
+    report = VerificationReport(
+        [CheckResult("semantic", Status.PASS, "equivalent")],
+        verification_level=VerificationLevel.SEMANTIC,
+        required_level=VerificationLevel.SEMANTIC,
+    )
+
+    assert report.policy_passed is True
     assert report.safe_to_ship is True
+    assert report.verdict == "SAFE TO SHIP"
+
+
+def test_report_fails_policy_when_coverage_is_too_weak():
+    report = VerificationReport(
+        [CheckResult("static", Status.PASS, "ok")],
+        verification_level=VerificationLevel.STATIC,
+        required_level=VerificationLevel.SEMANTIC,
+    )
+
+    assert report.checks_passed is True
+    assert report.coverage_satisfied is False
+    assert report.policy_passed is False
+    assert report.safe_to_ship is False
+    assert report.verdict == "UNSAFE TO SHIP"
 
 
 def test_report_serializes_fingerprints_and_prompt_evidence():
@@ -58,6 +88,8 @@ def test_report_serializes_fingerprints_and_prompt_evidence():
     )
 
     payload = report.to_dict()
-    assert payload["schema_version"] == "adapterguard.report.v1"
+    assert payload["schema_version"] == "adapterguard.report.v2"
+    assert payload["verification_level"] == "static"
+    assert payload["required_level"] == "static"
     assert payload["fingerprints"]["adapter"]["sha256"] == "deadbeef"
     assert payload["checks"][0]["evidence"][0]["first_divergent_position"] == 3
