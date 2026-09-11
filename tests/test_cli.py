@@ -111,4 +111,4 @@ def test_invalid_fingerprint_mode_returns_usage_error(tmp_path):
 def test_version_command_is_plain_text():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.4.0"
+    assert result.stdout.strip() == "0.4.1"

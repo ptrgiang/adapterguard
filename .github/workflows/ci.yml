@@ -15,8 +15,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -26,3 +26,43 @@ jobs:
         run: ruff check .
       - name: Tests
         run: pytest -q
+
+  action-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create minimal adapter fixture
+        shell: bash
+        run: |
+          mkdir -p .ci-adapter
+          cat > .ci-adapter/adapter_config.json <<'JSON'
+          {
+            "base_model_name_or_path": "acme/base",
+            "peft_type": "LORA",
+            "r": 8,
+            "lora_alpha": 16,
+            "target_modules": ["q_proj", "v_proj"]
+          }
+          JSON
+          printf 'fake' > .ci-adapter/adapter_model.safetensors
+
+      - name: Run AdapterGuard Action
+        id: guard
+        uses: ./
+        with:
+          adapter: .ci-adapter
+          install-hf: "false"
+          upload-evidence: "false"
+
+      - name: Assert Action outputs
+        shell: bash
+        env:
+          VERDICT: ${{ steps.guard.outputs.verdict }}
+          SAFE_TO_SHIP: ${{ steps.guard.outputs.safe-to-ship }}
+          REPORT_JSON: ${{ steps.guard.outputs.report-json }}
+          REPORT_MARKDOWN: ${{ steps.guard.outputs.report-markdown }}
+        run: |
+          test "$VERDICT" = "SAFE TO SHIP"
+          test "$SAFE_TO_SHIP" = "true"
+          test -f "$REPORT_JSON"
+          test -f "$REPORT_MARKDOWN"

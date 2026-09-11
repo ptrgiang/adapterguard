@@ -1,0 +1,188 @@
+name: AdapterGuard
+description: Gate model releases by verifying adapter, quantization, and serving-runtime integrity.
+author: AdapterGuard contributors
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  adapter:
+    description: Local PEFT adapter directory.
+    required: true
+  base:
+    description: Base model ID/path. Defaults to adapter_config.json.
+    required: false
+    default: ""
+  prompts:
+    description: JSONL prompts for semantic/runtime checks.
+    required: false
+    default: ""
+  merged:
+    description: Optional exported/merged model ID or local path.
+    required: false
+    default: ""
+  quantized:
+    description: Optional quantized model ID or local path.
+    required: false
+    default: ""
+  endpoint:
+    description: Optional OpenAI-compatible endpoint base URL.
+    required: false
+    default: ""
+  runtime-model:
+    description: Served model name sent to the endpoint.
+    required: false
+    default: ""
+  runtime-api-key:
+    description: Optional endpoint API key. Pass a GitHub secret.
+    required: false
+    default: ""
+  runtime-max-tokens:
+    description: Greedy completion length for runtime comparison.
+    required: false
+    default: "8"
+  runtime-timeout:
+    description: Per-request runtime timeout in seconds.
+    required: false
+    default: "30"
+  min-runtime-first-token-agreement:
+    description: Minimum runtime first-token agreement.
+    required: false
+    default: "1.0"
+  min-runtime-exact-match-rate:
+    description: Minimum runtime exact greedy completion match rate.
+    required: false
+    default: "1.0"
+  device:
+    description: auto, cpu, cuda, cuda:0, mps...
+    required: false
+    default: "auto"
+  dtype:
+    description: auto, float32, float16, or bfloat16.
+    required: false
+    default: "auto"
+  max-prompts:
+    description: Maximum prompts to evaluate.
+    required: false
+    default: "8"
+  max-merge-diff:
+    description: Maximum mean absolute logit difference after merge/export.
+    required: false
+    default: "0.001"
+  min-top1-agreement:
+    description: Minimum top-1 token agreement after merge/export.
+    required: false
+    default: "0.999"
+  max-quantized-diff:
+    description: Maximum mean absolute logit drift after quantization.
+    required: false
+    default: "0.05"
+  min-quantized-top1-agreement:
+    description: Minimum top-1 token agreement after quantization.
+    required: false
+    default: "0.98"
+  fingerprint-mode:
+    description: sampled, full, or off.
+    required: false
+    default: "sampled"
+  include-prompts:
+    description: Include raw prompts and runtime outputs in evidence reports.
+    required: false
+    default: "false"
+  report-json:
+    description: JSON evidence report path.
+    required: false
+    default: ".adapterguard/report.json"
+  report-markdown:
+    description: Markdown evidence report path.
+    required: false
+    default: ".adapterguard/report.md"
+  install-hf:
+    description: Install Hugging Face semantic dependencies.
+    required: false
+    default: "true"
+  upload-evidence:
+    description: Upload JSON/Markdown reports as a workflow artifact.
+    required: false
+    default: "true"
+  evidence-name:
+    description: Uploaded evidence artifact name.
+    required: false
+    default: "adapterguard-evidence"
+
+outputs:
+  verdict:
+    description: SAFE TO SHIP, UNSAFE TO SHIP, or ERROR.
+    value: ${{ steps.verify.outputs.verdict }}
+  safe-to-ship:
+    description: "\"true\" when no verification check failed."
+    value: ${{ steps.verify.outputs.safe_to_ship }}
+  report-json:
+    description: Absolute path to the JSON evidence report.
+    value: ${{ steps.verify.outputs.report_json }}
+  report-markdown:
+    description: Absolute path to the Markdown evidence report.
+    value: ${{ steps.verify.outputs.report_markdown }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.11"
+        cache: pip
+        cache-dependency-path: ${{ github.action_path }}/pyproject.toml
+
+    - name: Install AdapterGuard
+      shell: bash
+      env:
+        INSTALL_HF: ${{ inputs.install-hf }}
+      run: |
+        set -euo pipefail
+        if [[ "$INSTALL_HF" == "true" ]]; then
+          python -m pip install "${GITHUB_ACTION_PATH}[hf]"
+        else
+          python -m pip install "${GITHUB_ACTION_PATH}"
+        fi
+
+    - name: Verify model integrity
+      id: verify
+      shell: bash
+      env:
+        AG_ADAPTER: ${{ inputs.adapter }}
+        AG_BASE: ${{ inputs.base }}
+        AG_PROMPTS: ${{ inputs.prompts }}
+        AG_MERGED: ${{ inputs.merged }}
+        AG_QUANTIZED: ${{ inputs.quantized }}
+        AG_ENDPOINT: ${{ inputs.endpoint }}
+        AG_RUNTIME_MODEL: ${{ inputs.runtime-model }}
+        AG_RUNTIME_API_KEY: ${{ inputs.runtime-api-key }}
+        AG_RUNTIME_MAX_TOKENS: ${{ inputs.runtime-max-tokens }}
+        AG_RUNTIME_TIMEOUT: ${{ inputs.runtime-timeout }}
+        AG_MIN_RUNTIME_FIRST_TOKEN_AGREEMENT: ${{ inputs.min-runtime-first-token-agreement }}
+        AG_MIN_RUNTIME_EXACT_MATCH_RATE: ${{ inputs.min-runtime-exact-match-rate }}
+        AG_DEVICE: ${{ inputs.device }}
+        AG_DTYPE: ${{ inputs.dtype }}
+        AG_MAX_PROMPTS: ${{ inputs.max-prompts }}
+        AG_MAX_MERGE_DIFF: ${{ inputs.max-merge-diff }}
+        AG_MIN_TOP1_AGREEMENT: ${{ inputs.min-top1-agreement }}
+        AG_MAX_QUANTIZED_DIFF: ${{ inputs.max-quantized-diff }}
+        AG_MIN_QUANTIZED_TOP1_AGREEMENT: ${{ inputs.min-quantized-top1-agreement }}
+        AG_FINGERPRINT_MODE: ${{ inputs.fingerprint-mode }}
+        AG_INCLUDE_PROMPTS: ${{ inputs.include-prompts }}
+        AG_REPORT_JSON: ${{ inputs.report-json }}
+        AG_REPORT_MARKDOWN: ${{ inputs.report-markdown }}
+      run: python -m adapterguard.action_entrypoint
+
+    - name: Upload AdapterGuard evidence
+      if: ${{ always() && inputs.upload-evidence == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.evidence-name }}
+        path: |
+          ${{ inputs.report-json }}
+          ${{ inputs.report-markdown }}
+        if-no-files-found: warn
+        include-hidden-files: true
