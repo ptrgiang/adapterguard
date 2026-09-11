@@ -2,6 +2,15 @@ name: HF Semantic Smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/adapterguard/hf_semantic.py"
+      - "src/adapterguard/runtime_openai.py"
+      - "examples/killer_demo.py"
+      - "examples/quantization_demo.py"
+      - ".github/workflows/hf-smoke.yml"
+      - "pyproject.toml"
   schedule:
     - cron: "17 3 * * 1"
 
