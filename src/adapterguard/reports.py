@@ -3,11 +3,65 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .models import VerificationReport
+from .models import PromptEvidence, RuntimePromptEvidence, VerificationReport
 
 
 def _escape(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _render_logit_evidence(lines: list[str], items: list[PromptEvidence]) -> None:
+    lines.extend(
+        [
+            "| # | Prompt SHA-256 | Mean diff | Max diff | Top-1 agreement | "
+            "First divergent position | Prediction A → B |",
+            "| ---: | --- | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for item in items:
+        position = (
+            str(item.first_divergent_position)
+            if item.first_divergent_position is not None
+            else "—"
+        )
+        prediction = "—"
+        if item.left_token_id is not None and item.right_token_id is not None:
+            left = item.left_token if item.left_token is not None else str(item.left_token_id)
+            right = item.right_token if item.right_token is not None else str(item.right_token_id)
+            prediction = f"`{_escape(left)}` → `{_escape(right)}`"
+        lines.append(
+            f"| {item.prompt_index} | `{item.prompt_sha256}` | "
+            f"{item.mean_abs_logit_diff:.6g} | {item.max_abs_logit_diff:.6g} | "
+            f"{item.top1_token_agreement:.6g} | {position} | {prediction} |"
+        )
+        if item.prompt is not None:
+            lines.extend(["", f"> Prompt #{item.prompt_index}: `{_escape(item.prompt)}`", ""])
+
+
+def _render_runtime_evidence(lines: list[str], items: list[RuntimePromptEvidence]) -> None:
+    lines.extend(
+        [
+            "| # | Prompt SHA-256 | Exact match | First-token match | Latency ms | "
+            "Local SHA-256 | Served SHA-256 |",
+            "| ---: | --- | --- | --- | ---: | --- | --- |",
+        ]
+    )
+    for item in items:
+        lines.append(
+            f"| {item.prompt_index} | `{item.prompt_sha256}` | {item.exact_match} | "
+            f"{item.first_token_match} | {item.latency_ms:.3f} | "
+            f"`{item.local_completion_sha256}` | `{item.served_completion_sha256}` |"
+        )
+        if item.prompt is not None:
+            lines.extend(
+                [
+                    "",
+                    f"> Prompt #{item.prompt_index}: `{_escape(item.prompt)}`  ",
+                    f"> Local: `{_escape(item.local_completion or '')}`  ",
+                    f"> Served: `{_escape(item.served_completion or '')}`",
+                    "",
+                ]
+            )
 
 
 def render_markdown(report: VerificationReport) -> str:
@@ -52,41 +106,14 @@ def render_markdown(report: VerificationReport) -> str:
     if evidence_checks:
         lines.extend(["## Prompt-level evidence", ""])
         for check in evidence_checks:
-            lines.extend(
-                [
-                    f"### {_escape(check.name)}",
-                    "",
-                    "| # | Prompt SHA-256 | Mean diff | Max diff | Top-1 agreement | "
-                    "First divergent position | Prediction A → B |",
-                    "| ---: | --- | ---: | ---: | ---: | ---: | --- |",
-                ]
-            )
-            for item in check.evidence or []:
-                position = (
-                    str(item.first_divergent_position)
-                    if item.first_divergent_position is not None
-                    else "—"
-                )
-                prediction = "—"
-                if item.left_token_id is not None and item.right_token_id is not None:
-                    left = (
-                        item.left_token if item.left_token is not None else str(item.left_token_id)
-                    )
-                    right = (
-                        item.right_token
-                        if item.right_token is not None
-                        else str(item.right_token_id)
-                    )
-                    prediction = f"`{_escape(left)}` → `{_escape(right)}`"
-                lines.append(
-                    f"| {item.prompt_index} | `{item.prompt_sha256}` | "
-                    f"{item.mean_abs_logit_diff:.6g} | {item.max_abs_logit_diff:.6g} | "
-                    f"{item.top1_token_agreement:.6g} | {position} | {prediction} |"
-                )
-                if item.prompt is not None:
-                    lines.append("")
-                    lines.append(f"> Prompt #{item.prompt_index}: `{_escape(item.prompt)}`")
-                    lines.append("")
+            lines.extend([f"### {_escape(check.name)}", ""])
+            items = check.evidence or []
+            runtime_items = [item for item in items if isinstance(item, RuntimePromptEvidence)]
+            logit_items = [item for item in items if isinstance(item, PromptEvidence)]
+            if logit_items:
+                _render_logit_evidence(lines, logit_items)
+            if runtime_items:
+                _render_runtime_evidence(lines, runtime_items)
             lines.append("")
 
     lines.extend(
