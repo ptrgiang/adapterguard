@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "adapterguard"
+version = "0.1.0"
+description = "Semantic integrity checks for LoRA, QLoRA, DoRA and PEFT model adapters."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "AdapterGuard contributors"}
+]
+keywords = ["llm", "lora", "qlora", "peft", "fine-tuning", "model-verification", "mlops"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "typer>=0.12,<1",
+  "rich>=13,<15",
+]
+
+[project.optional-dependencies]
+hf = [
+  "torch>=2.2",
+  "transformers>=4.45",
+  "peft>=0.13",
+  "safetensors>=0.4",
+]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+adapterguard = "adapterguard.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/ptrgiang/adapterguard"
+Repository = "https://github.com/ptrgiang/adapterguard"
+Issues = "https://github.com/ptrgiang/adapterguard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/adapterguard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
