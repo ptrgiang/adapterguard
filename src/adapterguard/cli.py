@@ -12,7 +12,7 @@ from rich.table import Table
 from . import __version__
 from .fingerprints import fingerprint_artifact
 from .hf_semantic import MissingHFDependencies, run_semantic_checks
-from .models import ArtifactFingerprint, Status, VerificationReport
+from .models import ArtifactFingerprint, Status, VerificationLevel, VerificationReport
 from .reports import write_json_report, write_markdown_report
 from .static_checks import run_static_checks
 
@@ -47,6 +47,10 @@ def _render(report: VerificationReport) -> None:
         table.add_row(symbols[check.status], check.name, result)
 
     console.print(table)
+    console.print(
+        f"\n[bold]Coverage[/bold]: {report.verification_level.value} "
+        f"[dim](required: {report.required_level.value})[/dim]"
+    )
     if report.fingerprints:
         console.print("\n[bold]Artifact fingerprints[/bold]")
         for label, fingerprint in report.fingerprints.items():
@@ -55,8 +59,13 @@ def _render(report: VerificationReport) -> None:
                 f"[dim]({fingerprint.mode})[/dim]"
             )
 
-    if report.safe_to_ship:
+    if report.verdict == "SAFE TO SHIP":
         console.print("\n[bold green]VERDICT: SAFE TO SHIP[/bold green]")
+    elif report.verdict == "STATIC CHECKS PASS":
+        console.print(
+            "\n[bold cyan]VERDICT: STATIC CHECKS PASS[/bold cyan] "
+            "[dim]— semantic verification not run[/dim]"
+        )
     else:
         console.print("\n[bold red]VERDICT: UNSAFE TO SHIP[/bold red]")
 
@@ -83,6 +92,14 @@ def _collect_fingerprints(
         if fingerprint is not None:
             fingerprints[label] = fingerprint
     return fingerprints
+
+
+def _parse_level(value: str) -> VerificationLevel:
+    try:
+        return VerificationLevel(value.strip().lower())
+    except ValueError as exc:
+        allowed = ", ".join(level.value for level in VerificationLevel)
+        raise ValueError(f"verification level must be one of: {allowed}") from exc
 
 
 @app.command()
@@ -209,6 +226,13 @@ def verify(
             help="Minimum token-level top-1 agreement allowed after quantization.",
         ),
     ] = 0.98,
+    require_level: Annotated[
+        str,
+        typer.Option(
+            "--require-level",
+            help="Minimum verification coverage: static, semantic, quantization, or runtime.",
+        ),
+    ] = "static",
     include_prompts: Annotated[
         bool,
         typer.Option(
@@ -240,11 +264,17 @@ def verify(
     if fingerprint_mode not in {"sampled", "full", "off"}:
         console.print("[red]--fingerprint-mode must be sampled, full, or off.[/red]")
         raise typer.Exit(code=2)
+    try:
+        required_level = _parse_level(require_level)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
     if endpoint and prompts is None:
         console.print("[red]--endpoint requires --prompts for runtime comparison.[/red]")
         raise typer.Exit(code=2)
 
     config, checks = run_static_checks(adapter, expected_base=base)
+    verification_level = VerificationLevel.STATIC
 
     resolved_base = base
     if not resolved_base and config:
@@ -283,6 +313,11 @@ def verify(
                     include_prompts=include_prompts,
                 )
             )
+            verification_level = VerificationLevel.SEMANTIC
+            if quantized:
+                verification_level = VerificationLevel.QUANTIZATION
+            if endpoint:
+                verification_level = VerificationLevel.RUNTIME
         except MissingHFDependencies as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=2) from exc
@@ -302,7 +337,12 @@ def verify(
         console.print(f"[red]Fingerprinting failed: {exc}[/red]")
         raise typer.Exit(code=2) from exc
 
-    report = VerificationReport(checks, fingerprints=fingerprints)
+    report = VerificationReport(
+        checks,
+        fingerprints=fingerprints,
+        verification_level=verification_level,
+        required_level=required_level,
+    )
     if report_json:
         write_json_report(report, report_json)
     if report_markdown:
@@ -313,7 +353,7 @@ def verify(
     else:
         _render(report)
 
-    if not report.safe_to_ship:
+    if not report.policy_passed:
         raise typer.Exit(code=1)
 
 
