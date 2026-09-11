@@ -1,0 +1,30 @@
+name: HF Semantic Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semantic-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install AdapterGuard with Hugging Face dependencies
+        run: python -m pip install -e ".[hf]"
+      - name: Run corrupted-artifact semantic proof
+        run: python examples/killer_demo.py
+      - name: Run quantization-drift semantic proof
+        run: python examples/quantization_demo.py
