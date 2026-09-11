@@ -12,6 +12,15 @@ on:
       - "examples/tokenizer_drift_demo.py"
       - ".github/workflows/hf-smoke.yml"
       - "pyproject.toml"
+  pull_request:
+    paths:
+      - "src/adapterguard/hf_semantic.py"
+      - "src/adapterguard/runtime_openai.py"
+      - "examples/killer_demo.py"
+      - "examples/quantization_demo.py"
+      - "examples/tokenizer_drift_demo.py"
+      - ".github/workflows/hf-smoke.yml"
+      - "pyproject.toml"
   schedule:
     - cron: "17 3 * * 1"
 
@@ -19,7 +28,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: hf-smoke-${{ github.ref }}
+  group: hf-smoke-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
