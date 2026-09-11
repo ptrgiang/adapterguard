@@ -135,7 +135,11 @@ def _request_chat_completion(
         text = str(message.get("content") or "")
         logprobs = choice.get("logprobs") or {}
         content_logprobs = logprobs.get("content") or []
-        tokens = [str(item.get("token") or "") for item in content_logprobs if isinstance(item, dict)]
+        tokens = [
+            str(item.get("token") or "")
+            for item in content_logprobs
+            if isinstance(item, dict)
+        ]
         served_model = data.get("model")
     except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
         raise RuntimeEndpointError(
