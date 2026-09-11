@@ -25,6 +25,7 @@ _VALUE_OPTIONS = (
     ("AG_MIN_TOP1_AGREEMENT", "--min-top1-agreement"),
     ("AG_MAX_QUANTIZED_DIFF", "--max-quantized-diff"),
     ("AG_MIN_QUANTIZED_TOP1_AGREEMENT", "--min-quantized-top1-agreement"),
+    ("AG_REQUIRE_LEVEL", "--require-level"),
     ("AG_FINGERPRINT_MODE", "--fingerprint-mode"),
 )
 
@@ -45,14 +46,7 @@ def build_command(env: dict[str, str]) -> list[str]:
     report_json = _value(env, "AG_REPORT_JSON") or ".adapterguard/report.json"
     report_markdown = _value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md"
 
-    command = [
-        sys.executable,
-        "-m",
-        "adapterguard.cli",
-        "verify",
-        "--adapter",
-        adapter,
-    ]
+    command = [sys.executable, "-m", "adapterguard.cli", "verify", "--adapter", adapter]
     for env_name, option in _VALUE_OPTIONS:
         value = _value(env, env_name)
         if value:
@@ -62,12 +56,7 @@ def build_command(env: dict[str, str]) -> list[str]:
         command.append("--include-prompts")
 
     command.extend(
-        [
-            "--report-json",
-            report_json,
-            "--report-markdown",
-            report_markdown,
-        ]
+        ["--report-json", report_json, "--report-markdown", report_markdown]
     )
     return command
 
@@ -95,18 +84,18 @@ def _publish_outputs(
     report_markdown: pathlib.Path,
     env: dict[str, str],
 ) -> None:
-    verdict = "ERROR"
-    safe_to_ship = "false"
+    payload: dict[str, object] = {}
     if report_json.exists():
         try:
             payload = json.loads(report_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = {}
-        verdict = str(payload.get("verdict") or verdict)
-        safe_to_ship = "true" if payload.get("safe_to_ship") is True else "false"
 
-    _write_output("verdict", verdict, env)
-    _write_output("safe_to_ship", safe_to_ship, env)
+    _write_output("verdict", str(payload.get("verdict") or "ERROR"), env)
+    _write_output("safe_to_ship", "true" if payload.get("safe_to_ship") is True else "false", env)
+    _write_output("policy_passed", "true" if payload.get("policy_passed") is True else "false", env)
+    _write_output("verification_level", str(payload.get("verification_level") or "unknown"), env)
+    _write_output("required_level", str(payload.get("required_level") or "unknown"), env)
     _write_output("report_json", str(report_json.resolve()), env)
     _write_output("report_markdown", str(report_markdown.resolve()), env)
     _append_summary(report_markdown, env)
@@ -126,16 +115,10 @@ def main() -> int:
         return 2
 
     report_json = pathlib.Path(_value(env, "AG_REPORT_JSON") or ".adapterguard/report.json")
-    report_markdown = pathlib.Path(
-        _value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md"
-    )
+    report_markdown = pathlib.Path(_value(env, "AG_REPORT_MARKDOWN") or ".adapterguard/report.md")
 
     result = subprocess.run(command, env=env, check=False)
-    _publish_outputs(
-        report_json=report_json,
-        report_markdown=report_markdown,
-        env=env,
-    )
+    _publish_outputs(report_json=report_json, report_markdown=report_markdown, env=env)
     return result.returncode
 
 
