@@ -1,0 +1,2 @@
+{"messages":[{"role":"system","content":"You are concise and factual."},{"role":"user","content":"My order ID is A-102. Remember it."},{"role":"assistant","content":"Understood."},{"role":"user","content":"What order ID did I give you?"}]}
+{"messages":[{"role":"user","content":"Explain gradient descent in one sentence."},{"role":"assistant","content":"Gradient descent iteratively adjusts parameters to reduce a loss function."},{"role":"user","content":"Now explain why the learning rate matters."}]}
