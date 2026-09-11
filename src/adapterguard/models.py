@@ -31,6 +31,25 @@ class PromptEvidence:
 
 
 @dataclass(slots=True)
+class RuntimePromptEvidence:
+    prompt_index: int
+    prompt_sha256: str
+    exact_match: bool
+    first_token_match: bool
+    latency_ms: float
+    local_completion_sha256: str
+    served_completion_sha256: str
+    local_first_token: str | None = None
+    served_first_token: str | None = None
+    prompt: str | None = None
+    local_completion: str | None = None
+    served_completion: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class ArtifactFingerprint:
     label: str
     source: str
@@ -43,13 +62,16 @@ class ArtifactFingerprint:
         return asdict(self)
 
 
+EvidenceItem = PromptEvidence | RuntimePromptEvidence
+
+
 @dataclass(slots=True)
 class CheckResult:
     name: str
     status: Status
     message: str
     metrics: dict[str, Any] | None = None
-    evidence: list[PromptEvidence] | None = None
+    evidence: list[EvidenceItem] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
